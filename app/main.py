@@ -1,0 +1,162 @@
+"""FastAPI entrypoint — the HTTP surface the whole system triggers through.
+
+Three inbound triggers, all push (no polling anywhere — see docs §7):
+
+  POST /webhooks/calendar-timer   Google Calendar fires this 30 min after a
+                                  meeting ends -> runs Agent 1 (ingestion),
+                                  which classifies and then kicks the graph.
+
+  POST /webhooks/artifact-changed Supabase Database Webhook fires this when an
+                                  `artifacts` row is written. We act ONLY on
+                                  source='human' rows (the re-trigger loop);
+                                  source='agent' rows are ignored so agents
+                                  never re-trigger themselves (docs §7).
+
+  POST /orchestrator/run          Direct kick of the build graph for an
+                                  already-classified meeting (used by ingestion
+                                  and available for manual re-runs).
+
+Graph runs are keyed by thread_id = project_id, so the checkpointer can resume
+the right project's state on a follow-up or human-review continuation.
+"""
+from __future__ import annotations
+
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+from app.db.checkpointer import get_checkpointer
+from app.db.client import get_supabase
+from app.graph.build import build_graph
+from app.graph.state import ArtifactType, BuildState
+from app.services.ingestion import ingest_meeting
+
+app = FastAPI(title="Oblivion Multi-Agent Build Automation")
+
+
+# --------------------------------------------------------------------------
+# Request models
+# --------------------------------------------------------------------------
+class CalendarTimerPayload(BaseModel):
+    calendar_event_id: str
+    meeting_datetime: str
+    attendees: list[dict]
+    language: str
+    transcript_text: str  # manual Plaud export for now (see ingestion.py)
+    plaud_note_id: str | None = None
+
+
+class ArtifactChangedPayload(BaseModel):
+    # Shape mirrors Supabase's Database Webhook `record` for the artifacts table.
+    project_id: str
+    type: ArtifactType
+    source: str  # 'agent' | 'human'
+
+
+class OrchestratorRunPayload(BaseModel):
+    project_id: str
+    meeting_id: str
+    meeting_class: str
+    sub_type: ArtifactType | None = None
+    language: str
+    notes: str
+
+
+# --------------------------------------------------------------------------
+# Graph runner
+# --------------------------------------------------------------------------
+async def _run_graph(initial_state: BuildState) -> dict:
+    """Compile and invoke the build graph for one project, resumable via the
+    checkpointer keyed on project_id."""
+    async with get_checkpointer() as checkpointer:
+        graph = build_graph(checkpointer)
+        config = {"configurable": {"thread_id": initial_state["project_id"]}}
+        result = await graph.ainvoke(initial_state, config=config)
+        return dict(result)
+
+
+# --------------------------------------------------------------------------
+# Endpoints
+# --------------------------------------------------------------------------
+@app.post("/webhooks/calendar-timer")
+async def calendar_timer(payload: CalendarTimerPayload) -> dict:
+    """Agent 1 trigger. Ingest + classify; if confidently classified into an
+    actionable class, kick the graph. Low-confidence meetings stop at the
+    review queue and are not run."""
+    meeting = await ingest_meeting(**payload.model_dump())
+    classification = meeting.get("classification")
+
+    if not classification or classification["confidence"] < 0.70:
+        return {"status": "pending_review", "meeting_id": meeting["id"]}
+
+    if classification["meeting_class"] == "final_qa":
+        # No owning agent yet (docs §9.2) — don't route it into the graph.
+        return {"status": "final_qa_unhandled", "meeting_id": meeting["id"]}
+
+    result = await _run_graph(
+        {
+            "project_id": classification["project_id"],
+            "meeting_id": meeting["id"],
+            "meeting_class": classification["meeting_class"],
+            "sub_type": classification.get("sub_type"),
+            "language": payload.language,
+            "notes": payload.transcript_text,
+            "judge_round": 0,
+        }
+    )
+    return {"status": "processed", "meeting_id": meeting["id"], "needs_human_review": result.get("needs_human_review", False)}
+
+
+@app.post("/webhooks/artifact-changed")
+async def artifact_changed(payload: ArtifactChangedPayload) -> dict:
+    """The manual-edit re-trigger loop. Only human edits re-flow the chain;
+    agent writes are ignored so the chain can't trigger itself (docs §7).
+
+    Cascade is full and automatic (decided): a human wireframe edit re-flows
+    plan -> Gantt -> budget with no intermediate confirmation."""
+    if payload.source != "human":
+        return {"status": "ignored", "reason": "agent write, not a human edit"}
+
+    # The edited artifact's *successor* is where the chain must resume from.
+    resume_from = {"wireframe": "plan", "gantt": "budget", "plan": "gantt", "budget": None}[payload.type]
+    if resume_from is None:
+        return {"status": "noop", "reason": "budget is terminal; nothing downstream"}
+
+    # Reconstruct minimal state and re-run as a follow_up from the successor.
+    # notes/language are read from the latest meeting for this project.
+    latest_meeting = (
+        get_supabase()
+        .table("meetings")
+        .select("*")
+        .eq("project_id", payload.project_id)
+        .order("meeting_datetime", desc=True)
+        .limit(1)
+        .execute()
+        .data
+    )
+    meeting = latest_meeting[0] if latest_meeting else {}
+
+    result = await _run_graph(
+        {
+            "project_id": payload.project_id,
+            "meeting_id": meeting.get("id"),
+            "meeting_class": "follow_up",
+            "sub_type": resume_from,
+            "language": meeting.get("language", "es"),
+            "notes": "",  # follow-up here is driven by the edited upstream artifact, not new notes
+            "edited_artifact_type": payload.type,
+            "judge_round": 0,
+        }
+    )
+    return {"status": "re_triggered", "from": resume_from, "needs_human_review": result.get("needs_human_review", False)}
+
+
+@app.post("/orchestrator/run")
+async def orchestrator_run(payload: OrchestratorRunPayload) -> dict:
+    """Direct graph kick for an already-classified meeting."""
+    result = await _run_graph({**payload.model_dump(), "judge_round": 0})
+    return {"status": "processed", "needs_human_review": result.get("needs_human_review", False)}
+
+
+@app.get("/health")
+async def health() -> dict:
+    return {"status": "ok"}
