@@ -1,290 +1,289 @@
-# Arquitectura — Oblivion Multi-Agent Build Automation
+# Architecture — Oblivion Multi-Agent Build Automation
 
-> Documento maestro. Si vas a tocar el código, léelo primero. Captura el **porqué**
-> de cada decisión; el código captura el **cómo**. Cuando los dos discrepen, uno de
-> los dos está mal — arréglalo, no lo ignores.
-
----
-
-## 1. Qué estamos construyendo (el objetivo)
-
-Convertir **una reunión con un cliente en cuatro entregables de proyecto** —
-wireframe, plan de construcción, Gantt y presupuesto— de forma automática, sin
-intervención manual salvo revisión y edición.
-
-No es un solo programa. Es un **equipo de 7 agentes especializados**, cada uno con
-un trabajo estrecho, coordinados por un orquestador y vigilados por un juez
-compartido. La idea de fondo (del whiteboard original): un agente que hace una cosa
-bien es más fácil de razonar, testear y reemplazar que un mono-agente que lo hace
-todo regular.
-
-**Volumen real esperado:** 10–25 proyectos al año (dato del propio reporte de
-mercado de Oblivion). Esto condiciona TODA decisión de infraestructura: no
-diseñamos para "miles de ejecuciones concurrentes", diseñamos para una carga
-**bursty y de bajo volumen** (una reunión dispara una ráfaga de ~18 llamadas LLM,
-luego silencio hasta la próxima reunión). Sobre-ingeniería aquí es un antipatrón,
-no una virtud.
+> Master document. If you're going to touch the code, read this first. It captures
+> the **why** of every decision; the code captures the **how**. When the two
+> disagree, one of them is wrong — fix it, don't ignore it.
 
 ---
 
-## 2. El elenco de agentes
+## 1. What we're building (the objective)
 
-| # | Agente | Trabajo en una línea | Disparado por | Luego dispara |
-|---|--------|----------------------|---------------|---------------|
-| 1 | **Meeting Notes** | Exporta la nota de Plaud, la clasifica (proyecto + clase) | Timer, 30 min post-reunión | 7 |
-| 7 | **Orchestrator** | Decide quién corre y en qué modo | 1 | 2, 3, 4 o 5 |
-| 2 | **Wireframe** | Construye un wireframe editable desde las notas | 7 (o inicio de cadena) | 3 |
-| 3 | **Planner** | Lista necesidades (SW/HW/cloud) + plan ordenado | 2 o 7 | 4 |
-| 4 | **Gantt** | Milestones mensuales + tareas + Gantt | 3 o 7 | 5 |
-| 5 | **Budget** | Presupuesto justificado y priceado (.docx) | 4 o 7 | — / vuelve a 7 |
-| 6 | **Judge** | Revisa y aprueba cualquier artefacto (compartido) | 2, 3, 4, 5 | vuelve al que lo llamó |
+Turn **one client meeting into four project deliverables** — wireframe, build plan,
+Gantt and budget — automatically, with no manual work beyond review and editing.
 
-**La cadena de build es lineal y secuencial** — no hay paralelismo real que
-explotar, porque cada agente depende del artefacto del anterior: el presupuesto
-necesita el Gantt, el Gantt necesita el plan, el plan necesita el wireframe. Lo
-constatamos explícitamente para no perseguir un paralelismo inexistente más
-adelante.
+It's not a single program. It's a **team of 7 specialized agents**, each with a
+narrow job, coordinated by an orchestrator and kept honest by a shared judge. The
+core idea (from the original whiteboard): an agent that does one thing well is
+easier to reason about, test and replace than a mono-agent that does everything
+adequately.
+
+**Expected real volume:** 10–25 projects per year (from Oblivion's own market
+report). This constrains EVERY infrastructure decision: we do not design for
+"thousands of concurrent executions", we design for a **bursty, low-volume** load
+(one meeting triggers a burst of ~18 LLM calls, then silence until the next
+meeting). Over-engineering here is an anti-pattern, not a virtue.
+
+---
+
+## 2. The cast of agents
+
+| # | Agent | Job in one line | Triggered by | Then triggers |
+|---|-------|-----------------|--------------|---------------|
+| 1 | **Meeting Notes** | Export the Plaud note, classify it (project + class) | Timer, 30 min after meeting | 7 |
+| 7 | **Orchestrator** | Decide who runs and in what mode | 1 | 2, 3, 4 or 5 |
+| 2 | **Wireframe** | Build an editable wireframe from the notes | 7 (or start of chain) | 3 |
+| 3 | **Planner** | List needs (SW/HW/cloud) + ordered plan | 2 or 7 | 4 |
+| 4 | **Gantt** | Monthly milestones + tasks + Gantt | 3 or 7 | 5 |
+| 5 | **Budget** | Justified, priced budget (.docx) | 4 or 7 | — / back to 7 |
+| 6 | **Judge** | Review & approve any artifact (shared) | 2, 3, 4, 5 | back to caller |
+
+**The build chain is linear and sequential** — there's no real parallelism to
+exploit, because each agent depends on the previous one's artifact: the budget
+needs the Gantt, the Gantt needs the plan, the plan needs the wireframe. We state
+this explicitly so nobody chases a nonexistent parallelism later.
 
 ```
-   reunión ──30min──▶ [1 MEETING NOTES] ── export + clasifica (proyecto, clase)
+   meeting ──30min──▶ [1 MEETING NOTES] ── export + classify (project, class)
                               │
                               ▼
-                      [7 ORCHESTRATOR] ── enruta por clase; modo: create/follow-up/update
+                      [7 ORCHESTRATOR] ── route by class; mode: create/follow-up/update
                        │    │    │    │
-        onboarding →   ▼    ▼    ▼    ▼   ← follow-up/update entran directo al agente dueño
+        onboarding →   ▼    ▼    ▼    ▼   ← follow-up/update enter directly at the owning agent
                     [2]──▶[3]──▶[4]──▶[5]
                     wire  plan  gantt budget
-                     └─────┴──▶ [6 JUDGE] ◀──┴─────┘  (cada artefacto, máx. 2 rondas)
+                     └─────┴──▶ [6 JUDGE] ◀──┴─────┘  (each artifact, max 2 rounds)
 
-   edición manual de wireframe → re-corre 3   |   edición manual de Gantt → re-corre 5
+   manual edit of wireframe → re-run 3   |   manual edit of Gantt → re-run 5
 ```
 
 ---
 
-## 3. De dónde sale la data y cómo se transforma (flujo de datos)
+## 3. Where the data comes from and how it's transformed (data flow)
 
-Este es el corazón del sistema. Seguir el dato de principio a fin:
+This is the heart of the system. Follow the data end to end:
 
-### 3.1. Entrada
-1. **Google Calendar** — un evento de reunión. De aquí salen: hora de fin
-   (dispara el timer de 30 min), lista de asistentes (emails → usados para el
-   match determinístico de proyecto), e idioma implícito.
-2. **Plaud** — la transcripción de la reunión. **Hoy es export manual** ("Developer
-   Platform JSON later", dice el doc original). No hay integración API con Plaud
-   todavía: `ingestion.export_plaud_note` es un stub que recibe el transcript ya
-   exportado. Cuando exista la API, se cambia solo ese stub sin tocar nada aguas
-   abajo.
+### 3.1. Input
+1. **Google Calendar** — a meeting event. From it: end time (fires the 30-min
+   timer), attendee list (emails → used for deterministic project matching), and
+   implicit language.
+2. **Plaud** — the meeting transcript. **It's a manual export today** ("Developer
+   Platform JSON later", per the original doc). There is no Plaud API integration
+   yet: `ingestion.export_plaud_note` is a stub that receives the already-exported
+   transcript. Once the API exists, only that stub changes — nothing downstream.
 
-### 3.2. Transformación (Agente 1)
-El transcript crudo + los metadatos del calendar se convierten en un **registro de
-reunión clasificado**: `project_id`, `class`, `sub_type`, `language`, y el texto
-guardado en `raw_notes`. Ver §4 para el detalle de la clasificación.
+### 3.2. Transformation (Agent 1)
+The raw transcript + calendar metadata become a **classified meeting record**:
+`project_id`, `class`, `sub_type`, `language`, and the text stored in `raw_notes`.
+See §4 for the classification detail.
 
-### 3.3. Producción de artefactos (Agentes 2–5)
-Cada agente lee de Supabase lo que necesita, genera su artefacto, lo pasa por el
-Judge, y escribe una **nueva versión** en `artifacts` con `source='agent'`. El
-siguiente agente de la cadena lee esa versión y repite. Fuentes por agente:
+### 3.3. Artifact production (Agents 2–5)
+Each agent reads what it needs from Supabase, generates its artifact, passes it
+through the Judge, and writes a **new version** into `artifacts` with
+`source='agent'`. The next agent in the chain reads that version and repeats.
+Sources per agent:
 
-| Agente | Lee de | Produce (en `artifacts`) |
-|--------|--------|--------------------------|
-| 2 Wireframe | `raw_notes` + librería de wireframes pasados (few-shot) + foto de pizarra si la hay | `type='wireframe'` (JSON) |
-| 3 Planner | `raw_notes` + última versión del wireframe | `type='plan'` (JSON) |
-| 4 Gantt | última versión del plan | `type='gantt'` (JSON) + filas en `milestones`/`tasks` |
-| 5 Budget | último Gantt + librería de presupuestos pasados + `rate_config` | `type='budget'` (.docx en Storage, link en `file_url`) |
+| Agent | Reads from | Produces (in `artifacts`) |
+|-------|------------|---------------------------|
+| 2 Wireframe | `raw_notes` + library of past wireframes (few-shot) + whiteboard photo if any | `type='wireframe'` (JSON) |
+| 3 Planner | `raw_notes` + latest wireframe version | `type='plan'` (JSON) |
+| 4 Gantt | latest plan version | `type='gantt'` (JSON) + rows in `milestones`/`tasks` |
+| 5 Budget | latest Gantt + library of past budgets + `rate_config` | `type='budget'` (.docx in Storage, link in `file_url`) |
 
-### 3.4. Persistencia
-Todo vive en **Supabase (Postgres)**. Ver `supabase/migrations/0001_init_schema.sql`
-para el schema completo, comentado tabla por tabla. Dos conexiones distintas a la
-misma base:
-- **Datos de negocio** → `app/db/client.py` (API PostgREST, service role key).
-- **Estado del grafo** (checkpoints de LangGraph) → `app/db/checkpointer.py`
-  (conexión directa a Postgres, schema `langgraph` separado).
-
----
-
-## 4. Clasificación: cómo y con qué criterios (Agente 1)
-
-La clasificación responde **dos preguntas** sobre cada reunión:
-
-### 4.1. ¿A qué proyecto pertenece?
-Resolución de entidad en dos etapas, **lo barato primero** (`app/services/classification.py`):
-
-1. **Match determinístico — sin LLM.** Se cruzan los emails de los asistentes del
-   calendar contra `projects.attendee_emails`, y el título/notas contra
-   `projects.aliases` (+ el nombre del proyecto). Si **exactamente un** proyecto
-   matchea → resuelto, confianza 1.0, coste cero, cero no-determinismo.
-2. **Fallback LLM — solo si el paso 1 da 0 o >1 candidatos.** GLM-4.7-Flash recibe
-   la lista de proyectos activos + el excerpt de la reunión y devuelve una
-   clasificación estructurada.
-
-> **Criterio de diseño clave:** nunca auto-creamos un proyecto nuevo desde este
-> flujo. Un nombre de cliente mal transcrito creando un proyecto duplicado es peor
-> que un item extra en la cola de revisión. Si nada matchea, se sugiere nombre y va
-> a revisión humana.
-
-### 4.2. ¿Qué clase de reunión es?
-Taxonomía de 4 clases (mutuamente excluyentes en el modelo actual). Estos son los
-criterios que el Orchestrator usa después para enrutar:
-
-| Clase | Criterio | Qué provoca |
-|-------|----------|-------------|
-| **onboarding** | Proyecto nuevo | Cadena completa desde Agente 2 (modo create): 2→3→4→5 |
-| **follow_up** | Un artefacto existente necesita revisión (`sub_type` dice cuál) | Salta al agente dueño en modo follow-up, luego re-fluye aguas abajo |
-| **update** | Avance de progreso sobre un build vivo | Orchestrator inspecciona el repo, compara vs. plan, y dispara lo que haga falta (normalmente 4) |
-| **final_qa** | Etapa de aceptación | ⚠️ Sin agente dueño todavía — ver §9 Preguntas abiertas |
-
-### 4.3. Umbral de confianza
-Un resultado solo se auto-aplica si `confidence >= classification_confidence_threshold`
-(default 0.70, en `app/config.py`). Por debajo, la reunión queda
-`status='pending_review'` — esta es la cola de revisión que el whiteboard original
-asumía pero nunca especificó.
+### 3.4. Persistence
+Everything lives in **Supabase (Postgres)**. See
+`supabase/migrations/0001_init_schema.sql` for the full schema, commented table by
+table. Two distinct connections to the same database:
+- **Business data** → `app/db/client.py` (PostgREST API, service role key).
+- **Graph state** (LangGraph checkpoints) → `app/db/checkpointer.py` (direct
+  Postgres connection, separate `langgraph` schema).
 
 ---
 
-## 5. Registro de modelos (todos open-weight, vía AWS Bedrock)
+## 4. Classification: how and by what criteria (Agent 1)
 
-**Fuente de verdad autoritativa: `app/config.py` → `MODEL_REGISTRY`.** No dupliques
-la tabla completa aquí para que no derive; esta sección explica la *estrategia*, el
-código tiene los IDs exactos y el porqué de cada uno.
+Classification answers **two questions** about each meeting:
 
-- **Hosting:** AWS Bedrock **on-demand** (pago por token, serverless, capa Project
-  Mantle). Elegido sobre GPU propia (EC2/SageMaker) porque la carga es bursty: una
-  GPU reservada estaría ociosa >95% del tiempo. Bedrock cumple la garantía de
-  privacidad aceptada (AWS no entrena con tus datos, todo en tu cuenta/región).
-- **Estrategia:** especializar. Modelo capaz donde un error se propaga (Planner,
-  Judge); modelo barato donde la tarea es mecánica (clasificación, transformación).
+### 4.1. Which project does it belong to?
+Two-stage entity resolution, **cheapest first** (`app/services/classification.py`):
 
-| Agente | Modelo | Por qué (resumen) |
-|--------|--------|-------------------|
-| 1 Meeting Notes | `zai.glm-4.7-flash` | Clasificación trivial; el más barato del catálogo |
-| 7 Orchestrator (update) | `minimax.minimax-m2.1` | Solo el resumen de progreso; el routing es código, no LLM |
-| 2 Wireframe | `moonshotai.kimi-k2.5` | Visión nativa (fotos de pizarra) + JSON + tool-calling; más barato Y mejor que Qwen3-VL |
-| 3 Planner | `deepseek.v3.2` | Razonamiento multi-paso; sus errores cascadean |
-| 4 Gantt | `qwen.qwen3-next-80b-a3b-instruct` | Transformación estructurada; barato |
-| 5 Budget | `qwen.qwen3-next-80b-a3b-instruct` | Contexto largo para few-shot; aritmética en código, no LLM |
-| 6 Judge | `moonshotai.kimi-k2-thinking` | Familia distinta a los builders para no compartir puntos ciegos |
+1. **Deterministic match — no LLM.** Cross the calendar attendees' emails against
+   `projects.attendee_emails`, and the title/notes against `projects.aliases`
+   (+ the project name). If **exactly one** project matches → done, confidence 1.0,
+   zero cost, zero non-determinism.
+2. **LLM fallback — only if step 1 yields 0 or >1 candidates.** GLM-4.7-Flash
+   receives the list of active projects + the meeting excerpt and returns a
+   structured classification.
 
-### 5.1. El routing NO es un LLM
-Decisión deliberada: mapear clase→agente es una **tabla**, no un juicio. El
-Orchestrator lo hace en código determinístico (testeable, gratis, reproducible). El
-LLM del Orchestrator solo se usa para el **resumen de progreso en modo update**, que
-sí requiere razonamiento sobre código real vs. plan.
+> **Key design criterion:** we never auto-create a new project from this flow. A
+> mis-transcribed client name creating a duplicate project is worse than one extra
+> item in the review queue. If nothing matches, a name is suggested and it goes to
+> human review.
 
-### 5.2. Aritmética del presupuesto en código, no en el LLM
-El Agente 5 genera las **líneas** (horas, tarifa, justificación) pero las sumas,
-contingencia y conversión de moneda se calculan en Python. Un LLM equivocándose en
-una multiplicación de un documento que llega al cliente es un riesgo real y
-evitable.
+### 4.2. What class of meeting is it?
+A 4-class taxonomy (mutually exclusive in the current model). These are the criteria
+the Orchestrator later uses to route:
 
-### 5.3. Solapamiento Judge/Wireframe (tradeoff aceptado)
-El Judge (Kimi K2 Thinking) comparte laboratorio con el Wireframe (Kimi K2.5). La
-regla general es "Judge de familia distinta al builder" para no compartir puntos
-ciegos. Se acepta el solapamiento **solo aquí** porque el Judge del wireframe evalúa
-únicamente **estructura JSON vs. notas**, nunca el render visual — así que el linaje
-de visión compartido no se ejercita en esa revisión. Decisión tomada
-explícitamente; documentada por si algún día el rol del Judge cambia.
+| Class | Criterion | What it triggers |
+|-------|-----------|------------------|
+| **onboarding** | New project | Full chain from Agent 2 (create mode): 2→3→4→5 |
+| **follow_up** | An existing artifact needs revising (`sub_type` says which) | Jump to the owning agent in follow-up mode, then re-flow downstream |
+| **update** | Progress update on a live build | Orchestrator inspects the repo, compares vs. plan, and triggers what's needed (usually 4) |
+| **final_qa** | Acceptance stage | ⚠️ No owning agent yet — see §9 Open questions |
+
+### 4.3. Confidence threshold
+A result is only auto-applied if `confidence >= classification_confidence_threshold`
+(default 0.70, in `app/config.py`). Below that, the meeting stays
+`status='pending_review'` — this is the review queue the original whiteboard assumed
+but never specified.
 
 ---
 
-## 6. Dos patrones que comparten los agentes builder
+## 5. Model registry (all open-weight, via AWS Bedrock)
 
-### 6.1. El Judge loop
-Agentes 2–5 nunca escriben directo al CRM. Cada uno: genera borrador → lo somete al
-Judge con las notas fuente y ejemplos → recibe `APPROVE` o feedback accionable →
-revisa → reenvía, **máximo 2 rondas**. Tras la ronda 2:
-- Si aprobó en algún momento → se escribe la versión aprobada.
-- Si nunca aprobó → el artefacto se marca `status='needs_human_review'`, **no** se
-  acepta silenciosamente (decisión de ADR — ver §8). El grafo hace `interrupt()` y
-  espera intervención humana.
+**Authoritative source of truth: `app/config.py` → `MODEL_REGISTRY`.** Don't
+duplicate the full table here so it can't drift; this section explains the
+*strategy*, the code holds the exact IDs and the reasoning for each one.
 
-Construido **una sola vez** como helper compartido que llaman los 4 builders — Lean:
-no repetir el `while` con contador en cada agente.
+- **Hosting:** AWS Bedrock **on-demand** (pay-per-token, serverless, Project Mantle
+  inference layer). Chosen over a self-hosted GPU (EC2/SageMaker) because the load
+  is bursty: a reserved GPU would sit idle >95% of the time. Bedrock meets the
+  accepted privacy guarantee (AWS doesn't train on your data, everything stays in
+  your account/region).
+- **Strategy:** specialize. A capable model where an error propagates (Planner,
+  Judge); a cheap model where the task is mechanical (classification,
+  transformation).
 
-Regla clave: **no sobre-alimentar feedback**. Si el borrador ya está bien, aprobar
-limpio en vez de inventar cambios.
+| Agent | Model | Why (summary) |
+|-------|-------|---------------|
+| 1 Meeting Notes | `zai.glm-4.7-flash` | Trivial classification; cheapest in the catalog |
+| 7 Orchestrator (update) | `minimax.minimax-m2.1` | Only the progress summary; routing is code, not LLM |
+| 2 Wireframe | `moonshotai.kimi-k2.5` | Native vision (whiteboard photos) + JSON + tool-calling; cheaper AND better than Qwen3-VL |
+| 3 Planner | `deepseek.v3.2` | Multi-step reasoning; its errors cascade |
+| 4 Gantt | `qwen.qwen3-next-80b-a3b-instruct` | Structured transformation; cheap |
+| 5 Budget | `qwen.qwen3-next-80b-a3b-instruct` | Long context for few-shot; arithmetic in code, not LLM |
+| 6 Judge | `moonshotai.kimi-k2-thinking` | Different lineage than the builders so it doesn't share blind spots |
 
-### 6.2. Modos create / follow-up / update
-Cada builder tiene un modo:
-- **create** — construye fresco desde las notas (onboarding).
-- **follow-up** — carga la última versión guardada, diffea contra lo que piden las
-  notas, cambia solo eso.
-- **update** — como follow-up, pero el Orchestrator ya inspeccionó el repo y pasa un
-  resumen de progreso (build real vs. planeado), para actualizar contra la realidad.
+### 5.1. Routing is NOT an LLM
+Deliberate decision: mapping class→agent is a **table**, not a judgment. The
+Orchestrator does it in deterministic code (testable, free, reproducible). The
+Orchestrator's LLM is used only for the **progress summary in update mode**, which
+does require reasoning about real code vs. plan.
 
----
+### 5.2. Budget arithmetic in code, not in the LLM
+Agent 5 generates the **line items** (hours, rate, justification) but the sums,
+contingency and currency conversion are computed in Python. An LLM getting a
+multiplication wrong in a document that reaches the client is a real, avoidable
+risk.
 
-## 7. Re-disparo por edición manual
-
-Los artefactos llegan al CRM como editables. Cuando un humano edita uno, el
-artefacto aguas abajo queda obsoleto y la cadena debe re-fluir:
-- Humano edita wireframe → re-dispara Agente 3 → que re-dispara 4 → 5.
-- Humano edita Gantt/tareas → re-dispara Agente 5.
-
-Requiere dos cosas del modelo de datos, ambas ya en el schema:
-1. Cada artefacto **versionado**.
-2. Cada versión registra `source` (`agent`/`human`). **Solo** una versión
-   `source='human'` dispara el re-trigger — un write de agente nunca se dispara a sí
-   mismo en loop.
-
-**Transporte del disparo:** Supabase **Database Webhooks** (trigger de Postgres →
-POST HTTP a FastAPI). Es push, no polling: no gastamos ciclos preguntando "¿hay algo
-nuevo?" ni necesitamos un worker 24/7 vigilando la tabla. Elegido sobre cola
-dedicada (Redis/RabbitMQ) porque a este volumen la cola es infraestructura sin
-beneficio.
-
----
-
-## 8. Decisiones de arquitectura (ADR resumido)
-
-| Decisión | Elegido | Alternativas descartadas | Motivo |
-|----------|---------|--------------------------|--------|
-| Hosting de modelos | Bedrock on-demand | GPU propia (EC2/SageMaker); local | Carga bursty: GPU reservada ociosa >95% |
-| Transporte entre agentes | Supabase DB Webhooks | Cola dedicada; polling; llamada directa | Push sin infra nueva, proporcional al volumen |
-| Orchestrator routing | Reglas deterministas | Todo-LLM | Reproducible, testeable, gratis |
-| Judge tras 2 rondas sin aprobar | `needs_human_review` | Aceptar "mejor versión" en silencio | No mandar al cliente algo que el sistema calificó de insuficiente |
-| Aritmética de presupuesto | Código | LLM | Evitar errores de cálculo en doc de cliente |
-| Framework de orquestación | LangGraph | Orquestación a mano; Temporal | Judge loop = grafo cíclico nativo; checkpoints + interrupt() gratis |
-| Backend | Python (FastAPI) | Node/TS; Go | boto3/langchain-aws maduros; ecosistema LLM |
+### 5.3. Judge/Wireframe overlap (accepted tradeoff)
+The Judge (Kimi K2 Thinking) shares a lab with the Wireframe (Kimi K2.5). The
+general rule is "Judge of a different lineage than the builder" so they don't share
+blind spots. The overlap is accepted **only here** because the wireframe Judge
+evaluates only **JSON structure vs. notes**, never the visual render — so the shared
+vision lineage isn't exercised in that review. Decision taken explicitly; documented
+in case the Judge's role ever changes.
 
 ---
 
-## 9. Preguntas abiertas (bloqueantes marcadas ⚠️)
+## 6. Two patterns the builder agents share
 
-1. **Herramienta del wireframe** — ¿qué produce técnicamente el Agente 2? Decidido:
-   se renderiza en el CRM propio como JSON estructurado; el agente lo persiste vía
-   su API. El JSON exacto (schema de pantallas/componentes) aún hay que fijarlo.
-2. ⚠️ **Final QA** — Agente 1 puede clasificar "final_qa" pero no hay agente dueño.
-   ¿Agente 8 (QA/aceptación) o solo actualizar estado + generar handover docs?
-3. **Inspección de progreso (modo update)** — ¿commits/PRs de GitHub, lista de
-   issues estilo Axo #54–#82, o un status file del equipo? Stub en
-   `app/services/github_progress.py` hasta decidirlo.
-4. **Librerías de ejemplos** — ¿dónde viven wireframes/presupuestos pasados y cómo
-   se etiquetan los "mejores" para que el few-shot use buenos, no solo recientes?
-5. **Verificación de modelos en región** — confirmar que los 7 model IDs están
-   habilitados en `AWS_REGION` con `aws bedrock list-foundation-models` y que
-   `langchain-aws` habla con ellos vía Converse API. Primer paso técnico real.
-6. ~~**Cascada de re-disparo** — ¿total o acotable?~~ **DECIDIDO:** cascada
-   completa y automática (editar wireframe regenera plan→Gantt→presupuesto sin
-   intervención). Riesgo asumido: puede cambiar en silencio un presupuesto ya
-   compartido con el cliente — mitigar operativamente (no editar wireframes de
-   proyectos con presupuesto ya enviado sin saberlo). Ver `circuit breaker` como
-   mejora futura: un flag por proyecto para pausar la automatización.
+### 6.1. The Judge loop
+Agents 2–5 never write straight to the CRM. Each one: generates a draft → submits it
+to the Judge with the source notes and examples → receives `APPROVE` or actionable
+feedback → revises → resubmits, **max 2 rounds**. After round 2:
+- If it approved at some point → the approved version is written.
+- If it never approved → the artifact is marked `status='needs_human_review'`, it is
+  **not** silently accepted (ADR decision — see §8). The graph `interrupt()`s and
+  waits for human intervention.
+
+Built **once** as a shared helper called by all four builders — Lean: don't repeat
+the `while` with a counter in each agent.
+
+Key rule: **don't over-feedback**. If the draft is already good, approve it cleanly
+instead of inventing changes.
+
+### 6.2. create / follow-up / update modes
+Each builder has a mode:
+- **create** — build fresh from the notes (onboarding).
+- **follow-up** — load the latest saved version, diff it against what the notes ask,
+  change only that.
+- **update** — like follow-up, but the Orchestrator has already inspected the repo
+  and passes in a progress summary (real build vs. planned), so the agent updates
+  against reality, not just the notes.
 
 ---
 
-## 10. Principios de código (Lean Coding)
+## 7. Manual-edit re-trigger
 
-Cómo se escribe aquí, no negociable:
+Artifacts land in the CRM as editable. When a human edits one, the downstream
+artifact is now stale and the chain must re-flow:
+- Human edits wireframe → re-triggers Agent 3 → which re-triggers 4 → 5.
+- Human edits Gantt/tasks → re-triggers Agent 5.
 
-- **Fuente de verdad única.** Los model IDs viven solo en `MODEL_REGISTRY`. El
-  schema vive solo en la migración SQL. No dupliques ninguno en prosa que derive.
-- **Bajo acoplamiento.** Cada agente es un nodo que lee/escribe Supabase y no conoce
-  la implementación de los demás. Las integraciones externas (Plaud, GitHub) son
-  stubs con interfaz estable: se cambia el stub, no el llamador.
-- **Falla ruidoso.** `model_id_for` lanza KeyError ante un typo en vez de caer a un
-  modelo default en silencio. Idempotencia por constraint de BD, no por chequeos
-  dispersos.
-- **Sin complejidad especulativa.** Nada de Kafka/K8s/multi-tenant/CQRS a 10–25
-  proyectos/año. Se añade cuando el volumen lo justifique, no antes.
-- **El porqué se documenta.** Cada decisión no obvia lleva un comentario que remite
-  a este doc. Si algo parece raro, probablemente hay una razón — está escrita.
+This needs two things from the data model, both already in the schema:
+1. Every artifact is **versioned**.
+2. Each version records `source` (`agent`/`human`). **Only** a `source='human'`
+   version fires the re-trigger — an agent write must never trigger itself into a
+   loop.
+
+**Trigger transport:** Supabase **Database Webhooks** (Postgres trigger → HTTP POST
+to FastAPI). It's push, not polling: no cycles spent asking "is there anything new?"
+and no 24/7 worker watching the table. Chosen over a dedicated queue
+(Redis/RabbitMQ) because at this volume the queue is infrastructure with no benefit.
+
+---
+
+## 8. Architecture decisions (ADR summary)
+
+| Decision | Chosen | Alternatives rejected | Reason |
+|----------|--------|-----------------------|--------|
+| Model hosting | Bedrock on-demand | Self-hosted GPU (EC2/SageMaker); local | Bursty load: reserved GPU idle >95% |
+| Inter-agent transport | Supabase DB Webhooks | Dedicated queue; polling; direct call | Push with no new infra, proportional to volume |
+| Orchestrator routing | Deterministic rules | All-LLM | Reproducible, testable, free |
+| Judge after 2 rounds w/o approval | `needs_human_review` | Silently accept "best version" | Don't send the client something the system rated insufficient |
+| Budget arithmetic | Code | LLM | Avoid calculation errors in a client document |
+| Orchestration framework | LangGraph | Hand-rolled orchestration; Temporal | Judge loop = native cyclic graph; checkpoints + interrupt() for free |
+| Backend | Python (FastAPI) | Node/TS; Go | Mature boto3/langchain-aws; LLM ecosystem |
+
+---
+
+## 9. Open questions (blocking ones marked ⚠️)
+
+1. **Wireframe tooling** — what does Agent 2 technically produce? Decided: it renders
+   in the CRM itself as structured JSON; the agent persists it via its API. The exact
+   JSON (screens/components schema) still needs to be fixed.
+2. ⚠️ **Final QA** — Agent 1 can classify "final_qa" but there's no owning agent.
+   An Agent 8 (QA/acceptance), or just update status + generate handover docs?
+3. **Progress inspection (update mode)** — GitHub commits/PRs, an issue list in the
+   Axo #54–#82 style, or a status file the team maintains? Stub in
+   `app/services/github_progress.py` until decided.
+4. **Example libraries** — where do past wireframes/budgets live and how are the
+   "best" ones tagged so the few-shot uses good references, not just recent ones?
+5. **Model-in-region verification** — confirm the 7 model IDs are enabled in
+   `AWS_REGION` with `aws bedrock list-foundation-models`, and that `langchain-aws`
+   talks to them via the Converse API. First real technical step.
+6. ~~**Re-trigger cascade** — total or scoped?~~ **DECIDED:** full, automatic cascade
+   (editing the wireframe regenerates plan→Gantt→budget with no intervention).
+   Accepted risk: it can silently change a budget already shared with the client —
+   mitigate operationally (don't edit wireframes of projects with a budget already
+   sent without knowing). See `circuit breaker` as a future improvement: a per-project
+   flag to pause automation.
+
+---
+
+## 10. Code principles (Lean Coding)
+
+How code is written here, non-negotiable:
+
+- **Single source of truth.** Model IDs live only in `MODEL_REGISTRY`. The schema
+  lives only in the SQL migration. Don't duplicate either in prose that will drift.
+- **Low coupling.** Each agent is a node that reads/writes Supabase and doesn't know
+  the others' implementation. External integrations (Plaud, GitHub) are stubs with a
+  stable interface: swap the stub, not the caller.
+- **Fail loud.** `model_id_for` raises KeyError on a typo instead of silently falling
+  back to a default model. Idempotency via DB constraint, not scattered checks.
+- **No speculative complexity.** No Kafka/K8s/multi-tenant/CQRS at 10–25 projects/
+  year. Add it when volume justifies it, not before.
+- **The why is documented.** Every non-obvious decision carries a comment pointing
+  back to this doc. If something looks odd, there's probably a reason — it's written
+  down.

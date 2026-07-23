@@ -13,8 +13,8 @@ automatically.
 ## What it does, in one picture
 
 ```
-reunión ──30min──▶ [1 Meeting Notes] ─▶ [7 Orchestrator] ─▶ [2 Wireframe] ─▶ [3 Planner] ─▶ [4 Gantt] ─▶ [5 Budget]
-                    export + clasifica    enruta (código)      └──── cada uno pasa por [6 Judge] (máx 2 rondas) ────┘
+meeting ──30min──▶ [1 Meeting Notes] ─▶ [7 Orchestrator] ─▶ [2 Wireframe] ─▶ [3 Planner] ─▶ [4 Gantt] ─▶ [5 Budget]
+                   export + classify     route (code)        └──── each one passes through [6 Judge] (max 2 rounds) ────┘
 ```
 
 - **Agent 1** ingests the meeting (Plaud transcript + Google Calendar metadata) and
@@ -31,7 +31,7 @@ reunión ──30min──▶ [1 Meeting Notes] ─▶ [7 Orchestrator] ─▶ [
 All seven agents run **open-weight models on AWS Bedrock on-demand** (pay-per-token, no
 idle GPU). The registry — which model runs which agent, and why — is the single source
 of truth in [`app/config.py`](app/config.py) → `MODEL_REGISTRY`. Strategy and tradeoffs
-are explained in [ARCHITECTURE §5](docs/ARCHITECTURE.md#5-registro-de-modelos-todos-open-weight-vía-aws-bedrock).
+are explained in [ARCHITECTURE §5](docs/ARCHITECTURE.md).
 
 ## Tech stack
 
