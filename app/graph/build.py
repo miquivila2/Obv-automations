@@ -18,8 +18,9 @@ conditional edges here — the builder and judge nodes stay ignorant of it, so
 all four builders reuse the exact same loop wiring. That's the shared-helper
 principle from docs §6.1 expressed as graph edges instead of a copied while-loop.
 
-Persistence (writing the approved artifact via app.services.artifacts) and the
-budget's in-code pricing happen in the per-artifact persist step, kept thin here.
+Persistence is per-artifact-type (each writes to a different CRM/agent-schema
+table — see app.services.{plan,gantt,wireframe,budget}_persist) and the budget's
+in-code pricing happens in the per-artifact persist step, kept thin here.
 """
 from __future__ import annotations
 
@@ -74,18 +75,49 @@ def _after_judge(state: BuildState) -> str:
 async def persist(state: BuildState) -> BuildState:
     """Write the just-approved artifact to its store. Per-artifact persistence
     lives in the services layer; this node just dispatches on the artifact type.
-    Only Budget is implemented today — the other builders are still stubs."""
+    Each writes to a different table (the CRM's own where one exists, our
+    `agent` schema for the wireframe — docs §3.3) and only ever inserts new
+    agent-authored rows."""
     artifact_type = state["current_artifact_type"]
+    project_id = state["project_id"]
+    draft = state["draft"]
+
+    if artifact_type == "wireframe":
+        from app.services.wireframe_persist import persist_wireframe
+
+        persist_wireframe(
+            project_id=project_id,
+            payload=draft["payload"],
+            model_id=draft["model_id"],
+            intake_id=state.get("intake_id"),
+        )
+        return state
+
+    if artifact_type == "plan":
+        from app.services.plan_persist import persist_plan
+
+        persist_plan(
+            project_id=project_id,
+            brief=draft["brief"],
+            payload=draft["payload"],
+            model_id=draft["model_id"],
+            intake_id=state.get("intake_id"),
+        )
+        return state
+
+    if artifact_type == "gantt":
+        from app.services.gantt_persist import persist_gantt
+
+        persist_gantt(project_id=project_id, draft=draft)
+        return state
 
     if artifact_type == "budget":
         from app.services.budget_persist import persist_budget
 
-        persist_budget(project_id=state["project_id"], draft=state["draft"])
-    else:
-        raise NotImplementedError(
-            f"persistence for {artifact_type!r} is not implemented yet (Session 5)."
-        )
-    return state
+        persist_budget(project_id=project_id, draft=draft)
+        return state
+
+    raise ValueError(f"no persistence wired for artifact type {artifact_type!r}")
 
 
 def _after_persist(state: BuildState) -> str:

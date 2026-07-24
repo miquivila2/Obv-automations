@@ -63,33 +63,19 @@ class BudgetDraft(BaseModel):
         )
 
 
-def _load_gantt_tasks(project_id: str) -> list[dict]:
-    """Read the project's Gantt tasks from the CRM (read-only) — the work to price."""
-    from app.db.client import get_supabase
-
-    return (
-        get_supabase()
-        .table("gantt_tasks")
-        .select("id,phase,name,duration_days,position")
-        .eq("project_id", project_id)
-        .order("position")
-        .execute()
-        .data
-    )
-
-
 async def build_budget(state: BuildState) -> BuildState:
     """Generate priced budget line items and stash the draft in state. Persistence
     (line items + .docx) is the graph's persist step, not this node."""
     from app.config import model_id_for
     from app.services.bedrock import chat_model_for
     from app.services.budget_math import price_line_items
+    from app.services.gantt_persist import load_latest_gantt_tasks
     from app.services.rates import resolve_currency, resolve_rates
 
     rate_by_tier, project_preferred = resolve_rates(state["project_id"])
     currency = resolve_currency(state["language"], project_preferred)
 
-    gantt_tasks = _load_gantt_tasks(state["project_id"])
+    gantt_tasks = load_latest_gantt_tasks(state["project_id"])
     gantt_ctx = "\n".join(
         f"- id={t['id']} phase={t['phase']!r} name={t['name']!r} duration_days={t['duration_days']}"
         for t in gantt_tasks

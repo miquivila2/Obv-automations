@@ -271,9 +271,10 @@ and no 24/7 worker watching the table. Chosen over a dedicated queue
 
 ## 9. Open questions (blocking ones marked ⚠️)
 
-1. **Wireframe tooling** — what does Agent 2 technically produce? Decided: it renders
-   in the CRM itself as structured JSON; the agent persists it via its API. The exact
-   JSON (screens/components schema) still needs to be fixed.
+1. ~~**Wireframe tooling**~~ **DECIDED (Session 5):** renders in the CRM as structured
+   JSON, persisted to `agent.wireframe_drafts` (the CRM has no table for this artifact
+   type). Schema: `{"screens": [{"name", "purpose", "components": [...], "visible_to_roles":
+   [...], "navigates_to": [...]}]}` — see `app/graph/nodes/wireframe.py:WireframeDraft`.
 2. ⚠️ **Final QA** — Agent 1 can classify "final_qa" but there's no owning agent.
    An Agent 8 (QA/acceptance), or just update status + generate handover docs?
 3. **Progress inspection (update mode)** — GitHub commits/PRs, an issue list in the
@@ -281,6 +282,9 @@ and no 24/7 worker watching the table. Chosen over a dedicated queue
    `app/services/github_progress.py` until decided.
 4. **Example libraries** — where do past wireframes/budgets live and how are the
    "best" ones tagged so the few-shot uses good references, not just recent ones?
+   NOTE: client examples (e.g. the Axo Capital budget) are CONFIDENTIAL — never
+   commit them to this public repo (see `.gitignore`); they belong in Supabase
+   Storage or a private location.
 5. **Model-in-region verification** — confirm the 7 model IDs are enabled in
    `AWS_REGION` with `aws bedrock list-foundation-models`, and that `langchain-aws`
    talks to them via the Converse API. First real technical step.
@@ -290,6 +294,24 @@ and no 24/7 worker watching the table. Chosen over a dedicated queue
    mitigate operationally (don't edit wireframes of projects with a budget already
    sent without knowing). See `circuit breaker` as a future improvement: a per-project
    flag to pause automation.
+7. **Plaud integration** — blocked on Developer Platform access (`dev.plaud.ai`
+   "Contact Us" → approval → `PLAUD_CLIENT_ID`/`PLAUD_API_KEY` via `portal.plaud.ai`).
+   Until then, `export_plaud_note` stays a stub (manually-pasted transcript) and
+   the calendar timer (§ below) reports due events as failed for this reason.
+8. **`project_plan_drafts.status` vocabulary** — the CRM table has no documented
+   enum; we write `'draft'` as an assumption (see `app/services/plan_persist.py`).
+   Verify against real CRM data / the Lovable app's own status values before
+   relying on it in production.
+9. **Gantt task dependencies** — `gantt_persist.build_gantt_rows` uses a simplified
+   single sequential chain (each task depends on the one directly before it across
+   the whole flattened list) as a deliberate placeholder. Real parallel/independent
+   tasks need a human to refine `depends_on` in the CRM, or a smarter agent later.
+10. **Calendar timer → Agent 1 handoff** — `app/services/calendar_timer.py` detects
+    due meetings (Google Calendar sync already exists at the CRM level) but
+    `process_due_event` intentionally raises `NotImplementedError`: it needs (a)
+    Plaud's transcript (item 7) and (b) confirmation of what `public.events.
+    attendee_ids` actually contains (email strings? team_member uuids?) before
+    resolving attendee emails for classification — not guessed at.
 
 ---
 
