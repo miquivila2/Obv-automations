@@ -16,6 +16,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Local model provider (MODEL_PROVIDER=ollama) — run open-weight models on your
+# own machine, no AWS. Install with: pip install -e ".[local]"
+local = ["langchain-ollama>=0.2"]
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",

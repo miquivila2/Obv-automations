@@ -16,3 +16,9 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+
+# Confidential client examples (few-shot libraries). NEVER commit client budgets/
+# wireframes to this PUBLIC repo — they belong in Supabase Storage or here locally.
+examples/
+*.pdf
+*.docx

@@ -25,10 +25,19 @@ class Settings(BaseSettings):
     supabase_db_uri: str  # direct Postgres connection string, used only by the LangGraph checkpointer
 
     # --- Model provider ---
-    # "stub"    -> no AWS needed; chat_model_for returns canned outputs for local dev/tests.
+    # "stub"    -> no deps; chat_model_for returns canned outputs for fast unit tests.
+    # "ollama"  -> real open-weight models running LOCALLY (no AWS, no cost, fully private).
+    #              Uses smaller local proxies of the production models — see ollama_model.
     # "bedrock" -> real AWS Bedrock (requires AWS creds + model access enabled in aws_region).
-    # We build against "stub" until an AWS account exists; the switch is one env var.
-    model_provider: Literal["stub", "bedrock"] = "stub"
+    # The switch is one env var; nodes never know which provider they got.
+    model_provider: Literal["stub", "ollama", "bedrock"] = "stub"
+
+    # --- Ollama (only used when model_provider == "ollama") ---
+    ollama_base_url: str = "http://localhost:11434"
+    # One local model for every agent by default: local dev exercises the pipeline
+    # with REAL model calls, it doesn't need to match production model quality.
+    # Override per project/machine. Must be pulled first: `ollama pull <name>`.
+    ollama_model: str = "qwen3:8b"
 
     # --- AWS Bedrock (only used when model_provider == "bedrock") ---
     aws_region: str = "us-east-1"  # verify all 7 model ids below are actually enabled in this region

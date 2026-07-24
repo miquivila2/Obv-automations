@@ -6,7 +6,8 @@ MODEL_REGISTRY the single place a model id lives, and lets us swap the whole
 provider with one env var.
 
 Dispatch (app.config.Settings.model_provider):
-  * "stub"    -> app.services.stub_models.StubChatModel (no AWS, canned outputs)
+  * "stub"    -> app.services.stub_models.StubChatModel (no deps, canned outputs)
+  * "ollama"  -> langchain_ollama.ChatOllama (real models, running locally, free)
   * "bedrock" -> langchain_aws.ChatBedrockConverse (real, pay-per-token)
 
 Open verification item (see docs/ARCHITECTURE.md "Open questions"): the seven
@@ -36,6 +37,19 @@ def chat_model_for(agent: str, *, temperature: float = 0.2) -> Any:
         from app.services.stub_models import StubChatModel
 
         return StubChatModel(agent)
+
+    if settings.model_provider == "ollama":
+        # One local model for every agent (settings.ollama_model). The production
+        # model_id is intentionally ignored here: the frontier models in
+        # MODEL_REGISTRY don't fit on a local machine — local dev uses a smaller
+        # proxy to exercise the pipeline with real calls.
+        from langchain_ollama import ChatOllama
+
+        return ChatOllama(
+            model=settings.ollama_model,
+            base_url=settings.ollama_base_url,
+            temperature=temperature,
+        )
 
     # provider == "bedrock"
     from langchain_aws import ChatBedrockConverse
