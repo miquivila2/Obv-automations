@@ -77,25 +77,45 @@ The raw transcript + calendar metadata become a **classified meeting record**:
 See §4 for the classification detail.
 
 ### 3.3. Artifact production (Agents 2–5)
-Each agent reads what it needs from Supabase, generates its artifact, passes it
-through the Judge, and writes a **new version** into `artifacts` with
-`source='agent'`. The next agent in the chain reads that version and repeats.
-Sources per agent:
+Each agent reads what it needs, generates its artifact, passes it through the Judge,
+and persists it. **Critically: the CRM already models plans, Gantts and budgets** —
+so agents write into the CRM's existing tables, they do NOT invent parallel ones.
+The wireframe is the only artifact the CRM has no table for, so it lives in our
+`agent` schema. Sources and destinations per agent:
 
-| Agent | Reads from | Produces (in `artifacts`) |
-|-------|------------|---------------------------|
-| 2 Wireframe | `raw_notes` + library of past wireframes (few-shot) + whiteboard photo if any | `type='wireframe'` (JSON) |
-| 3 Planner | `raw_notes` + latest wireframe version | `type='plan'` (JSON) |
-| 4 Gantt | latest plan version | `type='gantt'` (JSON) + rows in `milestones`/`tasks` |
-| 5 Budget | latest Gantt + library of past budgets + `rate_config` | `type='budget'` (.docx in Storage, link in `file_url`) |
+| Agent | Reads from | Writes to |
+|-------|------------|-----------|
+| 2 Wireframe | `agent.meeting_intake` + past-wireframe library (few-shot) + whiteboard photo if any | `agent.wireframe_drafts` (new) |
+| 3 Planner | intake + latest wireframe | **`public.project_plan_drafts`** (existing CRM table: `payload`, `warnings`, `approved_at`) |
+| 4 Gantt | latest plan draft | **`public.gantt_tasks`** (existing CRM table; `source_draft_id` links back to the plan draft) |
+| 5 Budget | latest Gantt + past-budget library + rates | **`public.budget_line_items`** (existing CRM table: `quantity`/`unit_rate`/`amount`/`source`) + a `.docx` in Storage |
 
-### 3.4. Persistence
-Everything lives in **Supabase (Postgres)**. See
-`supabase/migrations/0001_init_schema.sql` for the full schema, commented table by
-table. Two distinct connections to the same database:
-- **Business data** → `app/db/client.py` (PostgREST API, service role key).
-- **Graph state** (LangGraph checkpoints) → `app/db/checkpointer.py` (direct
-  Postgres connection, separate `langgraph` schema).
+Rates are read from `public.projects` (`hourly_rate`, `currency`, `preferred_currency`)
+and `public.team_members` (`day_rate`) — the CRM already holds them, so there is no
+separate `rate_config` table.
+
+### 3.4. Persistence & CRM integration
+The Supabase database is **owned by the live Lovable CRM** (oblivionlabs.lovable.app),
+in the `public` schema. Our design treats that as sacred:
+
+- **We reuse the CRM's tables** (`projects`, `clients`, `events`, `project_plan_drafts`,
+  `gantt_tasks`, `budget_line_items`, `tasks`, `team_members`) by reading/writing them
+  from app code (`app/db/client.py`, PostgREST + service role key).
+- **Everything we add lives in a dedicated `agent` schema** — `meeting_intake`,
+  `wireframe_drafts`, `artifact_feedback`, `code_progress`, `runs`, `project_matchers`.
+  See `supabase/migrations/0001_agent_layer.sql`.
+- **Graph state** (LangGraph checkpoints) → `app/db/checkpointer.py`, its own
+  `langgraph` schema.
+
+**Production-safety contract (non-negotiable):**
+1. Nothing is ever added to, altered in, or dropped from `public`. Our tables are in
+   `agent`; the CRM schema is left untouched.
+2. No foreign key points *into* a CRM table — a real FK could block a CRM
+   delete/update. Cross-references (event_id, project_id) are plain uuid columns,
+   enforced in app code. FKs exist only among `agent.*` tables.
+3. Agents *insert new rows* into CRM artifact tables (that's the product's purpose),
+   always in a `draft` / pending-approval state — a human approves in the CRM before
+   anything is final. They never modify or delete existing CRM data.
 
 ---
 
@@ -244,6 +264,8 @@ and no 24/7 worker watching the table. Chosen over a dedicated queue
 | Budget arithmetic | Code | LLM | Avoid calculation errors in a client document |
 | Orchestration framework | LangGraph | Hand-rolled orchestration; Temporal | Judge loop = native cyclic graph; checkpoints + interrupt() for free |
 | Backend | Python (FastAPI) | Node/TS; Go | Mature boto3/langchain-aws; LLM ecosystem |
+| CRM data model | Reuse CRM tables + `agent` schema for gaps | Own parallel tables; separate DB | CRM already models plan/gantt/budget; a separate DB can't populate them anyway |
+| Cross-refs to CRM tables | Plain uuid columns, no FK | Real FKs | A FK into a CRM table could block a CRM delete → production risk |
 
 ---
 
