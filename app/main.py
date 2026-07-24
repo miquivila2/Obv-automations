@@ -19,6 +19,13 @@ Three inbound triggers, all push (no polling anywhere — see docs §7):
                                   already-classified meeting (used by ingestion
                                   and available for manual re-runs).
 
+  POST /internal/calendar-timer/tick   Meant for an external scheduler (cron /
+                                  Task Scheduler / cloud scheduler), not a user.
+                                  Polls public.events for meetings that ended
+                                  30 min ago (Google Calendar sync already exists
+                                  at the CRM level — this just watches it) and
+                                  fires Agent 1. See app/services/calendar_timer.py.
+
 Graph runs are keyed by thread_id = project_id, so the checkpointer can resume
 the right project's state on a follow-up or human-review continuation.
 """
@@ -158,6 +165,17 @@ async def orchestrator_run(payload: OrchestratorRunPayload) -> dict:
     """Direct graph kick for an already-classified meeting."""
     result = await _run_graph({**payload.model_dump(), "judge_round": 0})
     return {"status": "processed", "needs_human_review": result.get("needs_human_review", False)}
+
+
+@app.post("/internal/calendar-timer/tick")
+async def calendar_timer_tick() -> dict:
+    """Called by an external scheduler, not a user. See module docstring above
+    and app/services/calendar_timer.py — transcript/attendee resolution isn't
+    wired yet (pending Plaud), so due events currently report as failed with a
+    clear reason rather than silently doing nothing."""
+    from app.services.calendar_timer import run_calendar_timer_once
+
+    return await run_calendar_timer_once()
 
 
 @app.get("/health")

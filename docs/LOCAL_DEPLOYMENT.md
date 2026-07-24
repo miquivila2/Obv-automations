@@ -105,6 +105,24 @@ curl -X POST http://localhost:8000/webhooks/calendar-timer \
 
 ---
 
+## Scheduling the calendar timer
+
+Google Calendar sync already exists at the CRM level (`public.google_credentials`
++ `public.events`) — nothing to set up there. What needs scheduling is our own
+poll that watches for meetings that just ended:
+
+```bash
+# every 5 minutes, hit the tick endpoint
+curl -X POST http://localhost:8000/internal/calendar-timer/tick
+```
+
+Cron (Linux/macOS): `*/5 * * * * curl -s -X POST http://localhost:8000/internal/calendar-timer/tick`
+Windows: a Task Scheduler task running that `curl` on a 5-minute trigger.
+
+Today this will report due events as **failed** with a clear reason — transcript
+fetching (Plaud) and attendee-email resolution aren't wired yet (see
+`app/services/calendar_timer.py`). That's expected until Plaud's integration lands.
+
 ## Choosing a model
 
 `OLLAMA_MODEL` is one model for every agent by default (simplest). Pick by machine:
