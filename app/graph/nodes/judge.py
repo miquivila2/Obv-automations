@@ -59,6 +59,14 @@ class JudgeVerdict(BaseModel):
         description="Empty or a brief 'looks good' when approving; specific, actionable items when rejecting.",
     )
 
+    @classmethod
+    def stub(cls) -> "JudgeVerdict":
+        """Canned output for MODEL_PROVIDER=stub: approve, so a stubbed run flows
+        cleanly through the whole chain end-to-end. The reject/revise/
+        needs_human_review path is exercised by unit tests that construct verdicts
+        directly (tests/test_judge_loop.py), not by the stub."""
+        return cls(verdict="approve", feedback="[stub] auto-approved")
+
 
 async def judge(state: BuildState) -> BuildState:
     """Review the current draft against the notes using the artifact's rubric."""

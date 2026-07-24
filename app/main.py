@@ -7,10 +7,13 @@ Three inbound triggers, all push (no polling anywhere — see docs §7):
                                   which classifies and then kicks the graph.
 
   POST /webhooks/artifact-changed Supabase Database Webhook fires this when an
-                                  `artifacts` row is written. We act ONLY on
+                                  artifact row is edited. We act ONLY on
                                   source='human' rows (the re-trigger loop);
                                   source='agent' rows are ignored so agents
                                   never re-trigger themselves (docs §7).
+                                  TODO(Session 6): wire to the real CRM artifact
+                                  tables (project_plan_drafts / gantt_tasks /
+                                  budget_line_items / agent.wireframe_drafts).
 
   POST /orchestrator/run          Direct kick of the build graph for an
                                   already-classified meeting (used by ingestion
@@ -37,16 +40,15 @@ app = FastAPI(title="Oblivion Multi-Agent Build Automation")
 # Request models
 # --------------------------------------------------------------------------
 class CalendarTimerPayload(BaseModel):
-    calendar_event_id: str
-    meeting_datetime: str
-    attendees: list[dict]
+    event_id: str  # public.events row id (the CRM's Google-Calendar-synced event)
+    attendee_emails: list[str] = []
     language: str
     transcript_text: str  # manual Plaud export for now (see ingestion.py)
     plaud_note_id: str | None = None
 
 
 class ArtifactChangedPayload(BaseModel):
-    # Shape mirrors Supabase's Database Webhook `record` for the artifacts table.
+    # Shape mirrors a Supabase Database Webhook `record` for an artifact table.
     project_id: str
     type: ArtifactType
     source: str  # 'agent' | 'human'
@@ -54,7 +56,7 @@ class ArtifactChangedPayload(BaseModel):
 
 class OrchestratorRunPayload(BaseModel):
     project_id: str
-    meeting_id: str
+    intake_id: str
     meeting_class: str
     sub_type: ArtifactType | None = None
     language: str
@@ -82,20 +84,20 @@ async def calendar_timer(payload: CalendarTimerPayload) -> dict:
     """Agent 1 trigger. Ingest + classify; if confidently classified into an
     actionable class, kick the graph. Low-confidence meetings stop at the
     review queue and are not run."""
-    meeting = await ingest_meeting(**payload.model_dump())
-    classification = meeting.get("classification")
+    intake = await ingest_meeting(**payload.model_dump())
+    classification = intake.get("classification")
 
     if not classification or classification["confidence"] < 0.70:
-        return {"status": "pending_review", "meeting_id": meeting["id"]}
+        return {"status": "pending_review", "intake_id": intake["id"]}
 
     if classification["meeting_class"] == "final_qa":
         # No owning agent yet (docs §9.2) — don't route it into the graph.
-        return {"status": "final_qa_unhandled", "meeting_id": meeting["id"]}
+        return {"status": "final_qa_unhandled", "intake_id": intake["id"]}
 
     result = await _run_graph(
         {
             "project_id": classification["project_id"],
-            "meeting_id": meeting["id"],
+            "intake_id": intake["id"],
             "meeting_class": classification["meeting_class"],
             "sub_type": classification.get("sub_type"),
             "language": payload.language,
@@ -103,7 +105,7 @@ async def calendar_timer(payload: CalendarTimerPayload) -> dict:
             "judge_round": 0,
         }
     )
-    return {"status": "processed", "meeting_id": meeting["id"], "needs_human_review": result.get("needs_human_review", False)}
+    return {"status": "processed", "intake_id": intake["id"], "needs_human_review": result.get("needs_human_review", False)}
 
 
 @app.post("/webhooks/artifact-changed")
@@ -122,26 +124,27 @@ async def artifact_changed(payload: ArtifactChangedPayload) -> dict:
         return {"status": "noop", "reason": "budget is terminal; nothing downstream"}
 
     # Reconstruct minimal state and re-run as a follow_up from the successor.
-    # notes/language are read from the latest meeting for this project.
-    latest_meeting = (
+    # notes/language are read from the latest intake for this project.
+    latest_intake = (
         get_supabase()
-        .table("meetings")
+        .schema("agent")
+        .table("meeting_intake")
         .select("*")
         .eq("project_id", payload.project_id)
-        .order("meeting_datetime", desc=True)
+        .order("created_at", desc=True)
         .limit(1)
         .execute()
         .data
     )
-    meeting = latest_meeting[0] if latest_meeting else {}
+    intake = latest_intake[0] if latest_intake else {}
 
     result = await _run_graph(
         {
             "project_id": payload.project_id,
-            "meeting_id": meeting.get("id"),
+            "intake_id": intake.get("id"),
             "meeting_class": "follow_up",
             "sub_type": resume_from,
-            "language": meeting.get("language", "es"),
+            "language": intake.get("language", "es"),
             "notes": "",  # follow-up here is driven by the edited upstream artifact, not new notes
             "edited_artifact_type": payload.type,
             "judge_round": 0,

@@ -19,7 +19,7 @@ ArtifactType = Literal["wireframe", "plan", "gantt", "budget"]
 class BuildState(TypedDict, total=False):
     # --- Set by the caller / Agent 1, read by the Orchestrator ---
     project_id: str
-    meeting_id: str
+    intake_id: str  # agent.meeting_intake row that kicked off this run
     meeting_class: Literal["onboarding", "follow_up", "update", "final_qa"]
     sub_type: Optional[ArtifactType]  # which artifact a follow_up targets
     language: Literal["es", "en"]  # drives Budget currency

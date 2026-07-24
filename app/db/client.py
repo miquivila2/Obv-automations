@@ -15,13 +15,19 @@ them.
 from __future__ import annotations
 
 from functools import lru_cache
-
-from supabase import Client, create_client
+from typing import TYPE_CHECKING
 
 from app.config import get_settings
 
+if TYPE_CHECKING:  # avoid importing the heavy driver at module load
+    from supabase import Client
+
 
 @lru_cache
-def get_supabase() -> Client:
+def get_supabase() -> "Client":
+    # Imported lazily so modules that merely reference get_supabase (e.g. graph
+    # nodes) can be imported and unit-tested without the supabase driver installed.
+    from supabase import create_client
+
     settings = get_settings()
     return create_client(settings.supabase_url, settings.supabase_service_role_key)
