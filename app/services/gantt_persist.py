@@ -16,6 +16,10 @@ their existing id so `depends_on` chains stay valid across a regeneration.
 
 Dependency simplification (documented, not hidden — unchanged from before): each
 task depends on the one immediately before it in the flattened milestone order.
+
+Task descriptions (audit gap #3): `public.gantt_tasks` has no column to hold one,
+so each row's description lives in `agent.gantt_task_details` instead (own schema,
+same lifecycle — written/deleted alongside the matching gantt_tasks row).
 """
 from __future__ import annotations
 
@@ -71,7 +75,12 @@ def plan_gantt_upsert(
     Returns {"to_update": [rows...], "to_insert": [rows...], "to_delete": [ids...]}.
     """
     flat_tasks = [
-        {"phase": milestone["name"], "name": task["name"], "duration_days": task["duration_days"]}
+        {
+            "phase": milestone["name"],
+            "name": task["name"],
+            "duration_days": task["duration_days"],
+            "description": task["description"],
+        }
         for milestone in milestones
         for task in milestone["tasks"]
     ]
@@ -89,6 +98,7 @@ def plan_gantt_upsert(
             "phase": task["phase"],
             "name": task["name"],
             "duration_days": task["duration_days"],
+            "description": task["description"],  # NOT a gantt_tasks column — see persist_gantt
             "depends_on": [previous_id] if previous_id else [],
             "assignees": None,
             "assignee_ids": [],
@@ -105,9 +115,16 @@ def plan_gantt_upsert(
     return {"to_update": to_update, "to_insert": to_insert, "to_delete": to_delete}
 
 
+def _split_crm_row(row: dict) -> tuple[dict, str]:
+    """gantt_tasks has no `description` column — pull it out before writing there;
+    it goes to agent.gantt_task_details instead. Returns (crm_row, description)."""
+    crm_row = {k: v for k, v in row.items() if k not in ("id", "description")}
+    return crm_row, row["description"]
+
+
 def persist_gantt(*, project_id: str, draft: dict) -> dict:
     """Apply the upsert plan to public.gantt_tasks + keep agent.gantt_task_ownership
-    in sync. Returns counts for observability."""
+    and agent.gantt_task_details in sync. Returns counts for observability."""
     from app.db.client import get_supabase
 
     supabase = get_supabase()
@@ -115,30 +132,36 @@ def persist_gantt(*, project_id: str, draft: dict) -> dict:
     plan = plan_gantt_upsert(existing_ids, draft["payload"]["milestones"], project_id, draft.get("source_draft_id"))
 
     for row in plan["to_update"]:
-        supabase.table("gantt_tasks").update({k: v for k, v in row.items() if k != "id"}).eq(
-            "id", row["id"]
-        ).execute()
+        crm_row, _description = _split_crm_row(row)
+        supabase.table("gantt_tasks").update(crm_row).eq("id", row["id"]).execute()
 
     if plan["to_insert"]:
-        supabase.table("gantt_tasks").insert(plan["to_insert"]).execute()
+        supabase.table("gantt_tasks").insert(
+            [{**_split_crm_row(row)[0], "id": row["id"]} for row in plan["to_insert"]]
+        ).execute()
 
     if plan["to_delete"]:
-        # Delete order matters: drop the CRM row first, then our ownership record —
-        # if this fails partway, we're left with an orphaned ownership record (safe,
-        # just stale bookkeeping) rather than an ownership-less CRM row (unsafe: a
-        # future regeneration could no longer tell it was ours).
+        # Delete order matters: drop the CRM row first, then our own records — if this
+        # fails partway, we're left with orphaned bookkeeping (safe, just stale) rather
+        # than an ownership-less CRM row (unsafe: a future regeneration could no longer
+        # tell it was ours).
         supabase.table("gantt_tasks").delete().in_("id", plan["to_delete"]).execute()
         supabase.schema("agent").table("gantt_task_ownership").delete().in_(
             "gantt_task_id", plan["to_delete"]
         ).execute()
+        supabase.schema("agent").table("gantt_task_details").delete().in_(
+            "gantt_task_id", plan["to_delete"]
+        ).execute()
 
-    ownership_rows = [
-        {"gantt_task_id": r["id"], "project_id": project_id, "position": r["position"]}
-        for r in plan["to_update"] + plan["to_insert"]
-    ]
-    if ownership_rows:
+    touched = plan["to_update"] + plan["to_insert"]
+    if touched:
         supabase.schema("agent").table("gantt_task_ownership").upsert(
-            ownership_rows, on_conflict="gantt_task_id"
+            [{"gantt_task_id": r["id"], "project_id": project_id, "position": r["position"]} for r in touched],
+            on_conflict="gantt_task_id",
+        ).execute()
+        supabase.schema("agent").table("gantt_task_details").upsert(
+            [{"gantt_task_id": r["id"], "description": r["description"]} for r in touched],
+            on_conflict="gantt_task_id",
         ).execute()
 
     return {"updated": len(plan["to_update"]), "inserted": len(plan["to_insert"]), "deleted": len(plan["to_delete"])}

@@ -23,6 +23,9 @@ from app.graph.state import BuildState
 class GanttTaskItem(BaseModel):
     name: str
     duration_days: int = Field(..., gt=0)
+    description: str = Field(
+        ..., description="What this task delivers, one or two sentences (Axo style)."
+    )
 
 
 class GanttMilestone(BaseModel):
@@ -39,7 +42,13 @@ class GanttDraft(BaseModel):
             milestones=[
                 GanttMilestone(
                     name="[stub] Month 1",
-                    tasks=[GanttTaskItem(name="[stub] Set up project skeleton", duration_days=5)],
+                    tasks=[
+                        GanttTaskItem(
+                            name="[stub] Set up project skeleton",
+                            duration_days=5,
+                            description="[stub] Initialize repo, CI, base structure.",
+                        )
+                    ],
                 )
             ]
         )
@@ -72,8 +81,9 @@ async def build_gantt(state: BuildState) -> BuildState:
     model = chat_model_for("gantt").with_structured_output(GanttDraft)
     system = (
         "You are Oblivion's Gantt agent. From the plan, produce monthly milestones with "
-        "specific tasks (name + duration in days). Every plan item must map to at least one "
-        "task; do not invent scope beyond the plan."
+        "specific tasks (name, duration in days, and a one-to-two sentence description of "
+        "what the task delivers). Every plan item must map to at least one task; do not "
+        "invent scope beyond the plan."
     )
     human = f"{plan_ctx}{prior_ctx}{update_ctx}"
 

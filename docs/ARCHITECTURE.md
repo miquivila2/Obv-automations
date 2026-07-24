@@ -362,15 +362,28 @@ and no 24/7 worker watching the table. Chosen over a dedicated queue
       own rows, never a human's.
     - ~~**Gap #2: Budget had no follow-up mode**~~ **FIXED** — `budget.py` now
       loads current agent-authored lines and revises via the same upsert.
-    - **Gap #3: Gantt tasks have no description field** — still open. The
-      original doc asks for "tasks + descriptions", but `public.gantt_tasks` has
-      no column to hold one and we don't alter CRM tables. Options: drop the
-      requirement, or add a small `agent.gantt_task_details` side table (own
-      schema, no CRM touch) — undecided, needs a product call.
+    - ~~**Gap #3: Gantt tasks have no description field**~~ **FIXED** —
+      `agent.gantt_task_details` (0003) holds the description per gantt_task_id,
+      since `public.gantt_tasks` has no column for one and we don't alter CRM
+      tables. Same lifecycle as `gantt_task_ownership`: written/deleted alongside
+      the matching CRM row, never touching a row the agent doesn't own.
     - **Gap #4: Supabase Database Webhook is unconfigured** — still open. Only
       the receiving endpoint (`POST /webhooks/artifact-changed`) exists; nothing
       on the Supabase side is set up to actually call it when a CRM row changes.
       A deployment task, not a design question.
+
+### 3.6. Pending Lovable-side work (tracked here so it isn't lost)
+
+This repo never touches Lovable's code — anything requiring a CRM screen or a
+Lovable-managed table has to be built by the user, in Lovable. Standing items:
+
+- **Wireframe screen** — `agent.wireframe_drafts` has no CRM UI to view/edit it.
+  Deferred (blocked on Lovable access/tokens). When resumed, it must be a screen
+  *inside* the CRM itself (docs §3.5), built via Lovable prompts.
+- **General rule going forward**: whenever this repo's design needs a new
+  Lovable-facing screen or a table that should live in `public` (not `agent`),
+  that gets flagged explicitly to the user rather than assumed — this repo does
+  not build it.
 
 ---
 

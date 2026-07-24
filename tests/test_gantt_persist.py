@@ -2,13 +2,16 @@
 a Gantt regeneration into update/insert/delete operations without duplicating or
 orphaning rows in public.gantt_tasks. This is the core of gap #1/#2's fix.
 """
-from app.services.gantt_persist import plan_gantt_upsert
+from app.services.gantt_persist import _split_crm_row, plan_gantt_upsert
 
-_MILESTONES_2_TASKS = [{"name": "Month 1", "tasks": [{"name": "A", "duration_days": 5}, {"name": "B", "duration_days": 3}]}]
-_MILESTONES_3_TASKS = [
-    {"name": "Month 1", "tasks": [{"name": "A2", "duration_days": 5}, {"name": "B2", "duration_days": 3}, {"name": "C", "duration_days": 2}]}
-]
-_MILESTONES_1_TASK = [{"name": "Month 1", "tasks": [{"name": "A3", "duration_days": 5}]}]
+
+def _task(name, duration_days=5, description="desc"):
+    return {"name": name, "duration_days": duration_days, "description": description}
+
+
+_MILESTONES_2_TASKS = [{"name": "Month 1", "tasks": [_task("A"), _task("B")]}]
+_MILESTONES_3_TASKS = [{"name": "Month 1", "tasks": [_task("A2"), _task("B2"), _task("C")]}]
+_MILESTONES_1_TASK = [{"name": "Month 1", "tasks": [_task("A3")]}]
 
 
 def test_first_generation_is_all_inserts_no_existing_ids():
@@ -56,3 +59,16 @@ def test_never_touches_a_task_id_outside_the_ownership_list():
     plan = plan_gantt_upsert(["id-A"], _MILESTONES_3_TASKS, "p", None)
     touched_ids = {r["id"] for r in plan["to_update"]} | set(plan["to_delete"])
     assert touched_ids == {"id-A"}
+
+
+def test_description_carried_through_the_row():
+    plan = plan_gantt_upsert([], [{"name": "M1", "tasks": [_task("A", description="Builds X.")]}], "p", None)
+    assert plan["to_insert"][0]["description"] == "Builds X."
+
+
+def test_split_crm_row_removes_id_and_description():
+    row = {"id": "t-1", "description": "hello", "name": "A", "position": 0}
+    crm_row, description = _split_crm_row(row)
+    assert "id" not in crm_row and "description" not in crm_row
+    assert crm_row == {"name": "A", "position": 0}
+    assert description == "hello"
