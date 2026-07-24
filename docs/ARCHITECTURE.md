@@ -117,6 +117,44 @@ in the `public` schema. Our design treats that as sacred:
    always in a `draft` / pending-approval state — a human approves in the CRM before
    anything is final. They never modify or delete existing CRM data.
 
+### 3.5. How this plugs into the actual CRM app (not just its database)
+
+The CRM (Lovable, React) and the agent system (this repo, Python) are **two
+separate applications that never call each other directly** — they only meet at
+Supabase, the database both share:
+
+```
+   Lovable (CRM, React)          Agent system (this repo, FastAPI)
+          │                                  │
+          └───────────────┬──────────────────┘
+                           ▼
+                      Supabase (one DB)
+```
+
+**Why Plan/Gantt/Budget need zero CRM changes:** agents write into the CRM's own
+tables (`project_plan_drafts`, `gantt_tasks`, `budget_line_items`). The moment a
+row is inserted, the Lovable UI shows it on its next read — no code in Lovable has
+to change for those three artifact types. The integration is at the data layer,
+not the UI layer.
+
+**Why the Wireframe is different:** it lives in `agent.wireframe_drafts`, a table
+the CRM has never heard of and never queries. Today there is **no screen anywhere**
+where a human can see or edit an agent-generated wireframe.
+
+Decided (this session):
+- **Wireframe UI**: deferred. When built, it must be a screen **inside the CRM
+  itself** (not a separate external tool) — built via Lovable directly (the user
+  builds it with Lovable prompts; this repo does not touch Lovable's code). Blocked
+  today on Lovable access/tokens.
+- **Backend hosting**: undecided/deferred. Whatever calls this repo's FastAPI app
+  (the calendar-timer scheduler, a future CRM button) needs it reachable somewhere
+  — local-with-Ollama is not reachable from a cloud-hosted CRM unless exposed.
+  Revisit once ready for real deployment.
+- **Triggering**: **automatic only** for now (calendar timer + the artifact-changed
+  webhook). No manual "regenerate" button inside the CRM yet — that would require
+  Lovable calling `POST /orchestrator/run`, plus an auth mechanism between the two
+  apps, neither of which is built. Revisit if/when manual triggering is wanted.
+
 ---
 
 ## 4. Classification: how and by what criteria (Agent 1)
