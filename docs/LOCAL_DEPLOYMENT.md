@@ -77,6 +77,9 @@ SUPABASE_DB_URI=postgresql://postgres:<pw>@db.<test-project>.supabase.co:5432/po
 Apply `supabase/migrations/0001_agent_layer.sql` to the test database (Supabase SQL
 editor, or `psql "$SUPABASE_DB_URI" -f supabase/migrations/0001_agent_layer.sql`).
 
+Also create a Storage bucket named **`budgets`** (Supabase → Storage) — the Budget
+agent uploads the generated `.docx` there.
+
 ### 5. Verify everything is reachable
 ```bash
 python -m app.healthcheck

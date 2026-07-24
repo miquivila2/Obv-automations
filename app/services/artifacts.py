@@ -1,9 +1,11 @@
-"""Versioned artifact read/write — shared by all four builder nodes.
+"""DEPRECATED — do not use. Targets a generic `artifacts` table that does NOT
+exist in the real CRM.
 
-The versioning and persistence logic is identical for wireframe/plan/gantt/
-budget, so it lives here once instead of being copy-pasted into four nodes
-(Lean: single implementation, low coupling). Each builder only differs in how
-it *generates* its draft; how the draft is stored is uniform.
+The CRM models each artifact in its own table (project_plan_drafts, gantt_tasks,
+budget_line_items) plus our agent.wireframe_drafts, so persistence is per-type,
+not generic. Budget's real persistence lives in app.services.budget_persist; the
+plan/gantt/wireframe equivalents are Session 5. This module is kept only until
+those land, then it's deleted. Nothing new should import it.
 """
 from __future__ import annotations
 

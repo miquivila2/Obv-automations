@@ -1,83 +1,123 @@
 """Agent 5 — Budget.
 
-Produces a priced, justified budget in the FLOWSIGHT / Axo Capital format
-(two-tier hourly rates, monthly subtotals, contingency, market comparison,
-milestone payments) as a .docx. Uses Qwen3-Next-80B for long-context few-shot
-grounding against past budgets.
+Produces a priced, justified budget in the Axo Capital format (per-item hours x
+rate, monthly grouping, market comparison, milestone payments) and persists it as
+line items in the CRM plus a .docx in Storage.
 
-CRITICAL (see docs §5.2): the LLM generates the line items — task, hours,
-rate tier, justification — but the arithmetic (hours x rate, subtotals,
-contingency, currency) is computed in code (`price_budget`). An LLM getting a
-multiplication wrong in a document that goes to the client is a real,
-avoidable risk.
+CRITICAL (docs §5.2): the LLM generates the line items — category, description,
+hours, tier, month, justification — but the ARITHMETIC (hours x rate, subtotal)
+is computed in code (app.services.budget_math). An LLM getting a multiplication
+wrong in a client-facing document is a real, avoidable risk.
 
-Currency comes from the meeting language: USD if English, MXN if Spanish.
+Locked decisions (docs §5): currency by meeting language (USD/EN, MXN/ES, project
+override allowed); rates one-or-two-tier from the CRM; NO automatic IVA or
+discounts — a human adds those in the CRM.
 
-Inputs: the Gantt + tasks, a library of past budgets, and rate_config.
-Modes: create | follow-up (load latest budget first).
+Inputs: the project's Gantt tasks (public.gantt_tasks) + past-budget examples
+(few-shot, pending the example-library decision). Output draft is priced here and
+persisted by the graph's persist step (app.services.budget_persist).
 """
 from __future__ import annotations
 
-from app.db.client import get_supabase
+from pydantic import BaseModel, Field
+
 from app.graph.state import BuildState
-from app.services.artifacts import load_latest
-from app.services.bedrock import chat_model_for
 
 
-def _load_rates(currency: str) -> list[dict]:
-    """Current rate tiers for the given currency (most recent effective_from wins)."""
+class BudgetLine(BaseModel):
+    category: str = Field(..., description="Short grouping, e.g. 'Money-path fixes', 'Compliance'.")
+    description: str = Field(..., description="What this line delivers, one or two sentences.")
+    hours: float = Field(..., gt=0, description="Estimated hours for this line. NOT a cost.")
+    tier: str = Field("standard", description="Rate tier name; 'standard' unless the project has tiers.")
+    month: str | None = Field(None, description="Delivery month label, e.g. 'July', for monthly grouping.")
+    gantt_task_id: str | None = Field(None, description="The gantt task this line prices, if it maps to one.")
+    justification: str = Field(..., description="One-line justification of the hours (Axo style).")
+
+
+class BudgetDraft(BaseModel):
+    line_items: list[BudgetLine]
+
+    @classmethod
+    def stub(cls) -> "BudgetDraft":
+        """Canned output for MODEL_PROVIDER=stub: two plausible lines so the pricing
+        math and .docx render can be exercised end-to-end without a real model."""
+        return cls(
+            line_items=[
+                BudgetLine(
+                    category="Development",
+                    description="[stub] Core feature implementation.",
+                    hours=40,
+                    tier="standard",
+                    month="Month 1",
+                    justification="[stub] estimate.",
+                ),
+                BudgetLine(
+                    category="Testing",
+                    description="[stub] Automated test coverage.",
+                    hours=16,
+                    tier="standard",
+                    month="Month 1",
+                    justification="[stub] estimate.",
+                ),
+            ]
+        )
+
+
+def _load_gantt_tasks(project_id: str) -> list[dict]:
+    """Read the project's Gantt tasks from the CRM (read-only) — the work to price."""
+    from app.db.client import get_supabase
+
     return (
         get_supabase()
-        .table("rate_config")
-        .select("*")
-        .eq("currency", currency)
-        .order("effective_from", desc=True)
+        .table("gantt_tasks")
+        .select("id,phase,name,duration_days,position")
+        .eq("project_id", project_id)
+        .order("position")
         .execute()
         .data
     )
 
 
-def price_budget(line_items: list[dict], rates: list[dict], contingency_pct: float = 0.10) -> dict:
-    """Deterministic pricing in code, never in the LLM. Each line item is
-    {tier, hours, ...}; we look up the rate and compute. Returns totals plus
-    the priced lines. This is the money math — it must be exact and testable."""
-    rate_by_tier = {r["tier"]: r["hourly_rate"] for r in rates}
-    priced = []
-    subtotal = 0.0
-    for item in line_items:
-        rate = rate_by_tier.get(item["tier"], 0.0)
-        cost = rate * item["hours"]
-        subtotal += cost
-        priced.append({**item, "rate": rate, "cost": cost})
-    contingency = subtotal * contingency_pct
-    return {"lines": priced, "subtotal": subtotal, "contingency": contingency, "total": subtotal + contingency}
-
-
 async def build_budget(state: BuildState) -> BuildState:
-    currency = "USD" if state["language"] == "en" else "MXN"
-    rates = _load_rates(currency)
+    """Generate priced budget line items and stash the draft in state. Persistence
+    (line items + .docx) is the graph's persist step, not this node."""
+    from app.config import model_id_for
+    from app.services.bedrock import chat_model_for
+    from app.services.budget_math import price_line_items
+    from app.services.rates import resolve_currency, resolve_rates
 
-    gantt = load_latest(state["project_id"], "gantt")
-    gantt_ctx = f"Gantt + tasks:\n{gantt['content']}" if gantt else "Gantt: (none found)"
+    rate_by_tier, project_preferred = resolve_rates(state["project_id"])
+    currency = resolve_currency(state["language"], project_preferred)
 
-    model = chat_model_for("budget")
+    gantt_tasks = _load_gantt_tasks(state["project_id"])
+    gantt_ctx = "\n".join(
+        f"- id={t['id']} phase={t['phase']!r} name={t['name']!r} duration_days={t['duration_days']}"
+        for t in gantt_tasks
+    ) or "(no Gantt tasks found)"
+
+    model = chat_model_for("budget").with_structured_output(BudgetDraft)
     system = (
-        "You are Oblivion's budget agent. From the Gantt and tasks, produce budget LINE ITEMS in the "
-        "FLOWSIGHT/Axo Capital style: each line has a task, an hours estimate, a rate tier, and a "
-        "one-line justification. DO NOT compute any totals or costs — those are calculated separately. "
-        f"Rate tiers available ({currency}): {[r['tier'] for r in rates]}. "
-        "Return JSON: {\"line_items\": [{\"task\": str, \"hours\": number, \"tier\": str, \"justification\": str}]}"
+        "You are Oblivion's budget agent. From the Gantt tasks, produce budget LINE ITEMS "
+        "in the Axo Capital style: each line has a category, a description, an hours estimate, "
+        "a rate tier, an optional delivery month, the gantt_task_id it prices, and a one-line "
+        "justification.\n"
+        "DO NOT compute any costs, rates, subtotals, taxes, or discounts — those are calculated "
+        "in code. Only estimate hours and describe the work.\n"
+        f"Available rate tiers: {list(rate_by_tier)}. Currency is {currency} (set in code)."
     )
-    human = f"{gantt_ctx}"
+    draft: BudgetDraft = await model.ainvoke([("system", system), ("human", f"Gantt tasks:\n{gantt_ctx}")])
 
-    response = await model.ainvoke([("system", system), ("human", human)])
+    # Arithmetic in code — never trust the model for money (docs §5.2).
+    priced = price_line_items([li.model_dump() for li in draft.line_items], rate_by_tier)
 
-    # NOTE: parsing response.content into line_items and calling price_budget(),
-    # then rendering the .docx via the shared docx skill and uploading to Supabase
-    # Storage, happens in the persistence step (build.py). The math is price_budget's
-    # job — the model's output is never trusted for arithmetic.
     return {
         **state,
         "current_artifact_type": "budget",
-        "draft": {"raw": response.content, "currency": currency},
+        "draft": {
+            "currency": currency,
+            "rate_by_tier": rate_by_tier,
+            "lines": priced["lines"],
+            "subtotal": priced["subtotal"],
+            "model_id": model_id_for("budget"),
+        },
     }

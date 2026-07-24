@@ -56,21 +56,42 @@ def _route_from_orchestrator(state: BuildState) -> str:
 
 def _after_judge(state: BuildState) -> str:
     """The Judge loop decision, in one place:
-      - approve            -> persist, then continue down the chain (or END)
+      - approve            -> persist the approved artifact
       - reject, round < 2  -> back to the same builder to revise
       - reject, round == 2 -> stop, flag for human review
     """
     settings = get_settings()
-    artifact_type = state["current_artifact_type"]
 
     if state["judge_verdict"] == "approve":
-        nxt = _NEXT_IN_CHAIN[artifact_type]
-        return nxt if nxt is not None else END
+        return "persist"
 
     if state["judge_round"] < settings.judge_max_rounds:
-        return artifact_type  # revise: re-enter the same builder node
+        return state["current_artifact_type"]  # revise: re-enter the same builder node
 
     return "human_review"  # never approved within the cap
+
+
+async def persist(state: BuildState) -> BuildState:
+    """Write the just-approved artifact to its store. Per-artifact persistence
+    lives in the services layer; this node just dispatches on the artifact type.
+    Only Budget is implemented today — the other builders are still stubs."""
+    artifact_type = state["current_artifact_type"]
+
+    if artifact_type == "budget":
+        from app.services.budget_persist import persist_budget
+
+        persist_budget(project_id=state["project_id"], draft=state["draft"])
+    else:
+        raise NotImplementedError(
+            f"persistence for {artifact_type!r} is not implemented yet (Session 5)."
+        )
+    return state
+
+
+def _after_persist(state: BuildState) -> str:
+    """After persisting, continue down the linear chain, or END if terminal."""
+    nxt = _NEXT_IN_CHAIN[state["current_artifact_type"]]
+    return nxt if nxt is not None else END
 
 
 def _human_review(state: BuildState) -> BuildState:
@@ -91,6 +112,7 @@ def build_graph(checkpointer):
     for name, fn in _BUILDER_NODES.items():
         g.add_node(name, fn)
     g.add_node("judge", judge)
+    g.add_node("persist", persist)
     g.add_node("human_review", _human_review)
 
     g.add_edge(START, "orchestrator")
@@ -110,12 +132,16 @@ def build_graph(checkpointer):
     for name in _BUILDER_NODES:
         g.add_edge(name, "judge")
 
-    # The Judge routes back to a builder (revise), forward (next artifact / END),
-    # or to human review.
+    # The Judge routes back to a builder (revise), to persist (approved), or to
+    # human review (never approved within the cap).
     g.add_conditional_edges(
         "judge",
         _after_judge,
-        {**{t: t for t in _BUILDER_NODES}, "human_review": "human_review", END: END},
+        {**{t: t for t in _BUILDER_NODES}, "persist": "persist", "human_review": "human_review"},
+    )
+    # After persisting, continue down the chain to the next builder, or END.
+    g.add_conditional_edges(
+        "persist", _after_persist, {**{t: t for t in _BUILDER_NODES}, END: END}
     )
     g.add_edge("human_review", END)
 
