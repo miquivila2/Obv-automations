@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -23,7 +24,13 @@ class Settings(BaseSettings):
     supabase_service_role_key: str
     supabase_db_uri: str  # direct Postgres connection string, used only by the LangGraph checkpointer
 
-    # --- AWS Bedrock ---
+    # --- Model provider ---
+    # "stub"    -> no AWS needed; chat_model_for returns canned outputs for local dev/tests.
+    # "bedrock" -> real AWS Bedrock (requires AWS creds + model access enabled in aws_region).
+    # We build against "stub" until an AWS account exists; the switch is one env var.
+    model_provider: Literal["stub", "bedrock"] = "stub"
+
+    # --- AWS Bedrock (only used when model_provider == "bedrock") ---
     aws_region: str = "us-east-1"  # verify all 7 model ids below are actually enabled in this region
                                      # before relying on it — see docs/ARCHITECTURE.md "Open questions"
 

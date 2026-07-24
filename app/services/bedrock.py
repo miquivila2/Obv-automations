@@ -1,14 +1,18 @@
-"""Factory for LangChain chat models backed by AWS Bedrock.
+"""Model-provider entry point: `chat_model_for(agent)`.
 
-Every node builds its model through `chat_model_for(agent)` instead of
-constructing ChatBedrockConverse directly — that's what keeps app/config.py's
-MODEL_REGISTRY the single place a model id lives.
+Every node and service builds its model through `chat_model_for(agent)` instead
+of constructing a client directly — that's what keeps app/config.py's
+MODEL_REGISTRY the single place a model id lives, and lets us swap the whole
+provider with one env var.
+
+Dispatch (app.config.Settings.model_provider):
+  * "stub"    -> app.services.stub_models.StubChatModel (no AWS, canned outputs)
+  * "bedrock" -> langchain_aws.ChatBedrockConverse (real, pay-per-token)
 
 Open verification item (see docs/ARCHITECTURE.md "Open questions"): the seven
-model ids in the registry were added to Bedrock via Project Mantle in
-Feb 2026. Confirm `langchain-aws` speaks to them correctly through the
-Converse API, and that all seven are enabled in AWS_REGION, before relying on
-this in anything but a dev environment:
+model ids in the registry were added to Bedrock via Project Mantle in Feb 2026.
+Before flipping MODEL_PROVIDER=bedrock in anything but dev, confirm all seven are
+enabled in AWS_REGION and that langchain-aws speaks to them via the Converse API:
 
     aws bedrock list-foundation-models --region $AWS_REGION \
         --query "modelSummaries[].modelId"
@@ -16,17 +20,26 @@ this in anything but a dev environment:
 from __future__ import annotations
 
 from functools import lru_cache
-
-from langchain_aws import ChatBedrockConverse
+from typing import Any
 
 from app.config import get_settings, model_id_for
 
 
 @lru_cache
-def chat_model_for(agent: str, *, temperature: float = 0.2) -> ChatBedrockConverse:
-    """Return a cached chat model instance for the given agent key
-    (must match a key in app.config.MODEL_REGISTRY)."""
+def chat_model_for(agent: str, *, temperature: float = 0.2) -> Any:
+    """Return a cached chat model for the given agent key (must match a key in
+    app.config.MODEL_REGISTRY). Type is intentionally `Any`: the stub and the
+    real Bedrock client share only the slice of interface our nodes use."""
     settings = get_settings()
+
+    if settings.model_provider == "stub":
+        from app.services.stub_models import StubChatModel
+
+        return StubChatModel(agent)
+
+    # provider == "bedrock"
+    from langchain_aws import ChatBedrockConverse
+
     return ChatBedrockConverse(
         model=model_id_for(agent),
         region_name=settings.aws_region,
