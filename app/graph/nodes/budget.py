@@ -15,7 +15,12 @@ discounts — a human adds those in the CRM.
 
 Inputs: the project's Gantt tasks (public.gantt_tasks) + past-budget examples
 (few-shot, pending the example-library decision). Output draft is priced here and
-persisted by the graph's persist step (app.services.budget_persist).
+persisted by the graph's persist step (app.services.budget_persist), which upserts
+agent-owned lines rather than duplicating them on a follow-up regeneration
+(docs §5, gap #1/#2).
+
+Modes: create | follow-up (load the current agent-authored lines first, revise
+only what the notes ask — matches Wireframe/Planner's pattern).
 """
 from __future__ import annotations
 
@@ -81,6 +86,14 @@ async def build_budget(state: BuildState) -> BuildState:
         for t in gantt_tasks
     ) or "(no Gantt tasks found)"
 
+    prior = ""
+    if state.get("mode") == "follow_up":
+        from app.services.budget_persist import load_latest_budget_lines
+
+        existing_lines = load_latest_budget_lines(state["project_id"])
+        if existing_lines:
+            prior = f"\n\nCurrent budget lines to revise (change ONLY what the notes ask):\n{existing_lines}"
+
     model = chat_model_for("budget").with_structured_output(BudgetDraft)
     system = (
         "You are Oblivion's budget agent. From the Gantt tasks, produce budget LINE ITEMS "
@@ -91,7 +104,8 @@ async def build_budget(state: BuildState) -> BuildState:
         "in code. Only estimate hours and describe the work.\n"
         f"Available rate tiers: {list(rate_by_tier)}. Currency is {currency} (set in code)."
     )
-    draft: BudgetDraft = await model.ainvoke([("system", system), ("human", f"Gantt tasks:\n{gantt_ctx}")])
+    human = f"Gantt tasks:\n{gantt_ctx}{prior}"
+    draft: BudgetDraft = await model.ainvoke([("system", system), ("human", human)])
 
     # Arithmetic in code — never trust the model for money (docs §5.2).
     priced = price_line_items([li.model_dump() for li in draft.line_items], rate_by_tier)

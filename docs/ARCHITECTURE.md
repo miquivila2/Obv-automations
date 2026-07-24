@@ -340,16 +340,37 @@ and no 24/7 worker watching the table. Chosen over a dedicated queue
    enum; we write `'draft'` as an assumption (see `app/services/plan_persist.py`).
    Verify against real CRM data / the Lovable app's own status values before
    relying on it in production.
-9. **Gantt task dependencies** — `gantt_persist.build_gantt_rows` uses a simplified
-   single sequential chain (each task depends on the one directly before it across
-   the whole flattened list) as a deliberate placeholder. Real parallel/independent
-   tasks need a human to refine `depends_on` in the CRM, or a smarter agent later.
+9. ~~**Gantt task dependencies**~~ **DECIDED (gap #1/#2 fix, this session):**
+   `gantt_persist.plan_gantt_upsert` still uses a simplified single sequential
+   chain (each task depends on the one directly before it) — real parallel/
+   independent tasks need a human to refine `depends_on` in the CRM. What's new:
+   regeneration now UPDATEs/DELETEs the agent's own prior rows (tracked in
+   `agent.gantt_task_ownership`, since `gantt_tasks` has no source column) instead
+   of leaving duplicate rows behind — see §5 and `0002_gantt_task_ownership.sql`.
+   A human-created/edited row (no ownership record) is never touched.
 10. **Calendar timer → Agent 1 handoff** — `app/services/calendar_timer.py` detects
     due meetings (Google Calendar sync already exists at the CRM level) but
     `process_due_event` intentionally raises `NotImplementedError`: it needs (a)
     Plaud's transcript (item 7) and (b) confirmation of what `public.events.
     attendee_ids` actually contains (email strings? team_member uuids?) before
     resolving attendee emails for classification — not guessed at.
+11. **Audit findings (post-Session 5 review against the original spec doc)** —
+    tracked status of the four gaps found:
+    - ~~**Gap #1: source-tracking for regeneration**~~ **DECIDED & FIXED** —
+      see item 9. `agent.gantt_task_ownership` (Gantt) + `source='agent'`
+      (Budget, already existed) let regeneration UPDATE/DELETE only the agent's
+      own rows, never a human's.
+    - ~~**Gap #2: Budget had no follow-up mode**~~ **FIXED** — `budget.py` now
+      loads current agent-authored lines and revises via the same upsert.
+    - **Gap #3: Gantt tasks have no description field** — still open. The
+      original doc asks for "tasks + descriptions", but `public.gantt_tasks` has
+      no column to hold one and we don't alter CRM tables. Options: drop the
+      requirement, or add a small `agent.gantt_task_details` side table (own
+      schema, no CRM touch) — undecided, needs a product call.
+    - **Gap #4: Supabase Database Webhook is unconfigured** — still open. Only
+      the receiving endpoint (`POST /webhooks/artifact-changed`) exists; nothing
+      on the Supabase side is set up to actually call it when a CRM row changes.
+      A deployment task, not a design question.
 
 ---
 

@@ -52,6 +52,16 @@ async def build_gantt(state: BuildState) -> BuildState:
     plan = load_latest_plan(state["project_id"])
     plan_ctx = f"Plan:\n{plan['payload']}" if plan else "Plan: (none found)"
 
+    prior_ctx = ""
+    if state.get("mode") == "follow_up":
+        from app.services.gantt_persist import load_latest_gantt_tasks
+
+        existing_tasks = load_latest_gantt_tasks(state["project_id"])
+        if existing_tasks:
+            prior_ctx = (
+                f"\n\nCurrent Gantt tasks to revise (change ONLY what the notes ask):\n{existing_tasks}"
+            )
+
     update_ctx = ""
     if state.get("mode") == "update" and state.get("progress_summary"):
         update_ctx = (
@@ -65,7 +75,7 @@ async def build_gantt(state: BuildState) -> BuildState:
         "specific tasks (name + duration in days). Every plan item must map to at least one "
         "task; do not invent scope beyond the plan."
     )
-    human = f"{plan_ctx}{update_ctx}"
+    human = f"{plan_ctx}{prior_ctx}{update_ctx}"
 
     draft: GanttDraft = await model.ainvoke([("system", system), ("human", human)])
 
