@@ -379,15 +379,16 @@ and no 24/7 worker watching the table. Chosen over a dedicated queue
    client SDK — no LLM in that loop, a plain tool call.
 
    Two things this unblocked but did not eliminate:
-   - **ASSUMPTION TO VERIFY: OAuth token reuse.** The server's auth is an
-     interactive browser OAuth flow, caching a token at
-     `~/.plaud/tokens-mcp.json`. We assume one interactive login, done once by
-     hand (`npx -y @plaud-ai/mcp@latest install`) on the machine that runs
-     this backend, leaves a token every later *non-interactive* subprocess call
-     can reuse. Plaud's docs don't confirm or deny this. If wrong, the symptom
-     is `fetch_transcript` hanging waiting for a browser that never opens in a
-     headless deployment — bounded by a timeout so that fails loud, not silent
-     (`_CALL_TIMEOUT_SECONDS`).
+   - ~~**ASSUMPTION TO VERIFY: OAuth token reuse.**~~ **VERIFIED (this
+     session):** after one interactive login (`npx -y @plaud-ai/mcp@latest
+     install`, browser OAuth, token cached at `~/.plaud/tokens-mcp.json`), a
+     later *non-interactive* headless call to `_call_tool("list_files", {})`
+     succeeded in ~9s with no browser prompt and returned real recording data.
+     One login does leave a token every later subprocess call can reuse — the
+     symptom described below (hang waiting for a browser) is not what
+     happens in practice. Still bounded by `_CALL_TIMEOUT_SECONDS` as a
+     defensive fallback in case the token ever expires and the server
+     re-prompts.
    - **The matching problem (new — not anticipated by the original spec).** A
      Plaud recording carries no reference to a CRM `public.events` row; nothing
      links "this calendar event" to "this Plaud recording". `find_recording_id`

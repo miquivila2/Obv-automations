@@ -10,15 +10,15 @@ and calls its tools directly with the official `mcp` Python client SDK. No LLM
 is in this loop — it's a plain, deterministic tool call (list_files /
 get_transcript), same spirit as calling any other API client.
 
-ASSUMPTION TO VERIFY — the one genuine unknown here: the server's auth is an
-interactive browser OAuth flow, caching a token at ~/.plaud/tokens-mcp.json.
-We assume ONE interactive login, done once by hand on the machine that runs
-this backend (`npx -y @plaud-ai/mcp@latest install`), leaves a token that
-every later, non-interactive subprocess call can reuse. Plaud's docs neither
-confirm nor deny that reuse. If it's wrong (token expired, server re-prompts
-for a browser), the symptom would be this call hanging waiting for a browser
-that never opens in a headless deployment — _CALL_TIMEOUT_SECONDS turns that
-into a clear timeout instead of a silent hang (fail loud, docs §10).
+OAUTH TOKEN REUSE — VERIFIED: the server's auth is an interactive browser
+OAuth flow, caching a token at ~/.plaud/tokens-mcp.json. Confirmed empirically
+(Session 6/7): one interactive login (`npx -y @plaud-ai/mcp@latest install`),
+done once by hand on the machine that runs this backend, leaves a token every
+later *non-interactive* subprocess call reuses headlessly — a real
+`list_files` call succeeded in ~9s with no browser prompt. If the token ever
+expires and the server re-prompts for a browser, the symptom would be this
+call hanging — _CALL_TIMEOUT_SECONDS turns that into a clear timeout instead
+of a silent hang (fail loud, docs §10).
 
 THE MATCHING PROBLEM (new — not anticipated by the original spec): a Plaud
 recording carries no reference to a CRM `public.events` row; nothing links
