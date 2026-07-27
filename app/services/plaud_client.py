@@ -32,14 +32,30 @@ meeting.
 
 Requires Node.js >= 20 and the ability to run `npx` on whatever machine ends
 up hosting this backend (still undecided — docs §3.5).
+
+WINDOWS GOTCHA (found empirically, Session 6): `npx` on Windows resolves to
+`npx.cmd`, a batch script, not a `.exe`. `asyncio`'s subprocess machinery
+(what the `mcp` SDK's stdio transport uses internally) calls Windows'
+`CreateProcess` directly and CANNOT launch a `.cmd` file that way — it fails
+with `FileNotFoundError: [WinError 2]`, even though the exact same path works
+fine via the synchronous `subprocess` module (see app/healthcheck.py's
+check_plaud_mcp_cli, which uses `subprocess.run` and is unaffected). The fix
+is the standard one for this well-known Node-on-Windows issue: go through
+`cmd /c` explicitly rather than invoking `npx`/`npx.cmd` directly.
 """
 from __future__ import annotations
 
 import asyncio
+import sys
 from datetime import datetime, timedelta
 
-_NPX_COMMAND = "npx"
-_NPX_ARGS = ["-y", "@plaud-ai/mcp@latest"]
+if sys.platform == "win32":
+    # See "WINDOWS GOTCHA" above — npx.cmd can't be exec'd directly by asyncio.
+    _NPX_COMMAND = "cmd"
+    _NPX_ARGS = ["/c", "npx", "-y", "@plaud-ai/mcp@latest"]
+else:
+    _NPX_COMMAND = "npx"
+    _NPX_ARGS = ["-y", "@plaud-ai/mcp@latest"]
 # Generous for local subprocess/npx startup, but must not hang forever if the
 # OAuth-reuse assumption above turns out wrong.
 _CALL_TIMEOUT_SECONDS = 20.0

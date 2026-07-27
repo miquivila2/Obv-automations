@@ -4,16 +4,32 @@ browser — mcp.client.stdio.stdio_client and mcp.ClientSession are faked so the
 tool-call plumbing and the matching logic are both exercised for real.
 """
 import json
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import pytest
 
+from app.services import plaud_client
 from app.services.plaud_client import (
     _select_unambiguous_match,
     fetch_transcript,
     find_recording_id,
 )
+
+
+def test_windows_spawns_npx_through_cmd_not_directly():
+    # Found empirically (Session 6): asyncio's Windows subprocess transport
+    # calls CreateProcess directly and cannot exec a .cmd file (npx.cmd) —
+    # FileNotFoundError, even though `subprocess.run` handles the same path
+    # fine (see app/healthcheck.py's check_plaud_mcp_cli). Reproduced live
+    # against the real server: direct `npx` invocation failed with
+    # WinError 2; `cmd /c npx ...` connected and listed all 7 tools.
+    if sys.platform == "win32":
+        assert plaud_client._NPX_COMMAND == "cmd"
+        assert plaud_client._NPX_ARGS[:2] == ["/c", "npx"]
+    else:
+        assert plaud_client._NPX_COMMAND == "npx"
 
 
 class _FakeContent:
