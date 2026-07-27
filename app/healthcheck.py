@@ -1,24 +1,81 @@
 """Deployment healthcheck — run on the TARGET machine before first use.
 
-Verifies, without writing anything, that the three things a local deployment
-needs are actually reachable:
-  1. Config loads (all required env vars present).
-  2. The configured model provider is ready:
-       - ollama  -> the Ollama server is up and OLLAMA_MODEL is pulled.
-       - bedrock -> AWS region is set (model access is verified separately).
-       - stub    -> always ready.
-  3. Supabase is reachable (a read-only SELECT on public.projects).
-
-Usage:
     python -m app.healthcheck
 
 Exit code 0 if everything passes, 1 otherwise — so it can gate a deploy script.
+
+WHY THIS DOES MORE THAN PING THE DATABASE
+-----------------------------------------
+This repo and the Lovable CRM are two separate applications that never call
+each other; they meet only at the shared Supabase database (docs §3.5). That
+makes the DATABASE SCHEMA the entire integration contract — and every test in
+this repo runs against an in-memory fake, which proves our logic is right but
+proves nothing about whether the real CRM's columns match what we write.
+
+So this checks the contract itself, read-only:
+  1. Config loads (all required env vars present).
+  2. The configured model provider is ready.
+  3. Supabase is reachable at all.
+  4. The `agent` schema is exposed to PostgREST. Supabase only serves schemas
+     listed under Settings → API → Exposed schemas (default: public,
+     graphql_public). Every `.schema("agent")` call in this codebase fails
+     until `agent` is added there — the single most likely first-run failure.
+  5. Every `agent.*` table exists (i.e. all four migrations were applied).
+  6. Every `public.*` CRM table we read or write exists AND has the exact
+     columns we use. PostgREST rejects a select naming an unknown column, so
+     naming them all is a read-only way to verify the write contract without
+     inserting a single row.
+  7. The `budgets` Storage bucket exists (Agent 5 uploads the .docx there).
+  8. Reports the real shape of the two documented ASSUMPTIONS (docs §9.8,
+     §9.10) so they can be confirmed or corrected from evidence.
+
+NOTHING HERE WRITES. It is safe to point at production.
+
+Privacy note: step 8 reports the SHAPE of live data (types, lengths, whether a
+string looks like an email), never the values, so the output can be pasted
+into a chat or ticket without leaking client data.
 """
 from __future__ import annotations
 
 import json
 import sys
 import urllib.request
+
+# --- The integration contract, as exercised by app/services/*.py -------------
+# Columns this codebase actually reads or writes. If a name here is absent from
+# the real CRM, the agent that uses it breaks at runtime - which is exactly what
+# this file exists to catch before that happens.
+_CRM_TABLES: dict[str, list[str]] = {
+    # Read-only (classification, rates, budget .docx title).
+    "projects": ["id", "name", "status", "hourly_rate", "preferred_currency", "currency"],
+    # Read-only (calendar timer).
+    "events": ["id", "end_at", "project_id", "attendee_ids"],
+    # Written by Agent 3 (app/services/plan_persist.py).
+    "project_plan_drafts": [
+        "id", "project_id", "status", "brief", "payload", "warnings", "pipeline_meta", "created_at",
+    ],
+    # Written by Agent 4 (app/services/gantt_persist.py).
+    "gantt_tasks": [
+        "id", "project_id", "phase", "name", "duration_days", "depends_on", "assignees",
+        "assignee_ids", "progress", "anchor_date", "position", "source_draft_id",
+    ],
+    # Written by Agent 5 (app/services/budget_persist.py).
+    "budget_line_items": [
+        "id", "project_id", "category", "description", "quantity", "unit_rate", "amount",
+        "currency", "source", "gantt_task_id", "position", "month", "details",
+    ],
+}
+
+# Our own tables, one per migration file in supabase/migrations/.
+_AGENT_TABLES = [
+    "meeting_intake", "project_matchers", "wireframe_drafts", "artifact_feedback",
+    "code_progress", "runs",                    # 0001_agent_layer.sql
+    "gantt_task_ownership",                     # 0002
+    "gantt_task_details",                       # 0003
+    "project_repos",                            # 0004
+]
+
+_STORAGE_BUCKET = "budgets"
 
 
 def _ok(msg: str) -> None:
@@ -27,6 +84,14 @@ def _ok(msg: str) -> None:
 
 def _fail(msg: str) -> None:
     print(f"  [FAIL] {msg}")
+
+
+def _warn(msg: str) -> None:
+    print(f"  [WARN] {msg}")
+
+
+def _info(msg: str) -> None:
+    print(f"         {msg}")
 
 
 def check_config() -> tuple[bool, object]:
@@ -44,7 +109,7 @@ def check_config() -> tuple[bool, object]:
 def check_provider(settings) -> bool:
     provider = settings.model_provider
     if provider == "stub":
-        _ok("stub provider — always ready")
+        _ok("stub provider - always ready")
         return True
 
     if provider == "ollama":
@@ -66,7 +131,7 @@ def check_provider(settings) -> bool:
 
     if provider == "bedrock":
         if settings.aws_region:
-            _ok(f"bedrock provider — region={settings.aws_region} (verify model access separately)")
+            _ok(f"bedrock provider - region={settings.aws_region} (verify model access separately)")
             return True
         _fail("bedrock provider but AWS_REGION is empty")
         return False
@@ -88,18 +153,186 @@ def check_supabase() -> bool:
         return False
 
 
+def check_agent_schema_exposed() -> bool:
+    """The `agent` schema must be added under Settings -> API -> Exposed schemas.
+    Supabase does not expose it by default, and without it EVERY agent-schema
+    read and write in this codebase fails."""
+    from app.db.client import get_supabase
+
+    try:
+        get_supabase().schema("agent").table("meeting_intake").select("id").limit(1).execute()
+        _ok("`agent` schema is exposed to PostgREST")
+        return True
+    except Exception as e:  # noqa: BLE001
+        message = str(e)
+        if "PGRST106" in message or "schema must be one of" in message:
+            _fail("`agent` schema is NOT exposed to PostgREST - every agent.* read/write will fail.")
+            _info("Fix: Supabase -> Settings -> API -> Exposed schemas -> add `agent`, then save.")
+        else:
+            _fail(f"could not query agent.meeting_intake: {message}")
+            _info("If this says the table is missing, apply supabase/migrations/ in order.")
+        return False
+
+
+def check_agent_tables() -> bool:
+    """Every agent.* table exists - i.e. all four migrations were applied."""
+    from app.db.client import get_supabase
+
+    supabase = get_supabase()
+    missing = []
+    for table in _AGENT_TABLES:
+        try:
+            supabase.schema("agent").table(table).select("*").limit(1).execute()
+        except Exception:  # noqa: BLE001
+            missing.append(table)
+
+    if missing:
+        _fail(f"missing agent.* tables: {', '.join(missing)}")
+        _info("Apply every file in supabase/migrations/ in order (0001 -> 0004).")
+        return False
+    _ok(f"all {len(_AGENT_TABLES)} agent.* tables present (migrations 0001-0004 applied)")
+    return True
+
+
+def check_crm_contract() -> bool:
+    """The heart of this healthcheck: verify the CRM tables have the exact
+    columns this codebase reads and writes. PostgREST errors on a select that
+    names an unknown column, so this validates the write contract read-only."""
+    from app.db.client import get_supabase
+
+    supabase = get_supabase()
+    all_ok = True
+
+    for table, columns in _CRM_TABLES.items():
+        try:
+            supabase.table(table).select(",".join(columns)).limit(1).execute()
+            _ok(f"public.{table} - all {len(columns)} columns we use are present")
+        except Exception as e:  # noqa: BLE001
+            all_ok = False
+            message = str(e)
+            _fail(f"public.{table}: {message}")
+            # Narrow it down: re-check one column at a time so the report names
+            # the exact offenders rather than just the first failure.
+            bad = []
+            for column in columns:
+                try:
+                    supabase.table(table).select(column).limit(1).execute()
+                except Exception:  # noqa: BLE001
+                    bad.append(column)
+            if bad:
+                _info(f"columns not found on public.{table}: {', '.join(bad)}")
+
+    # The nested client read used by classification (projects -> clients).
+    try:
+        supabase.table("projects").select("id,clients(name,company)").limit(1).execute()
+        _ok("public.projects -> clients(name, company) relationship resolves")
+    except Exception as e:  # noqa: BLE001
+        all_ok = False
+        _fail(f"projects->clients nested select failed: {e}")
+        _info("Agent 1's deterministic project matching reads client name/company through this.")
+
+    return all_ok
+
+
+def check_storage_bucket() -> bool:
+    """Agent 5 uploads the generated budget .docx to this bucket."""
+    from app.db.client import get_supabase
+
+    try:
+        get_supabase().storage.from_(_STORAGE_BUCKET).list()
+        _ok(f"Storage bucket '{_STORAGE_BUCKET}' exists")
+        return True
+    except Exception as e:  # noqa: BLE001
+        _fail(f"Storage bucket '{_STORAGE_BUCKET}' not usable: {e}")
+        _info("Create it: Supabase -> Storage -> New bucket -> name it 'budgets'.")
+        return False
+
+
+def _describe(value) -> str:
+    """Describe a value's SHAPE without printing client data (see module docstring)."""
+    if value is None:
+        return "null"
+    if isinstance(value, list):
+        if not value:
+            return "empty list"
+        first = value[0]
+        kind = type(first).__name__
+        looks_like_email = isinstance(first, str) and "@" in first
+        hint = " (looks like an email)" if looks_like_email else ""
+        if isinstance(first, str) and not looks_like_email and len(first) == 36 and first.count("-") == 4:
+            hint = " (looks like a uuid)"
+        return f"list of {len(value)} x {kind}{hint}"
+    return f"{type(value).__name__}"
+
+
+def report_assumptions() -> None:
+    """Two documented assumptions (docs §9.8, §9.10) that can only be settled
+    against real data. Reports evidence; never fails the run."""
+    from app.db.client import get_supabase
+
+    supabase = get_supabase()
+
+    # §9.10 - events.attendee_ids: email strings, or team_member uuids?
+    try:
+        rows = supabase.table("events").select("attendee_ids").limit(5).execute().data
+        shapes = {_describe(r.get("attendee_ids")) for r in rows}
+        if not rows:
+            _warn("events: no rows yet - cannot confirm attendee_ids shape (docs §9.10)")
+        else:
+            _info(f"events.attendee_ids observed shape(s): {', '.join(sorted(shapes))}")
+            _info("  -> we assume EMAIL STRINGS (app/services/calendar_timer.py).")
+            _info("  -> if these are uuids, change _resolve_attendee_emails to an id->email lookup.")
+    except Exception as e:  # noqa: BLE001
+        _warn(f"could not sample events.attendee_ids: {e}")
+
+    # §9.8 - project_plan_drafts.status: which values does the CRM actually use?
+    try:
+        rows = supabase.table("project_plan_drafts").select("status").limit(50).execute().data
+        values = sorted({r.get("status") for r in rows if r.get("status") is not None})
+        if not values:
+            _warn("project_plan_drafts: no rows yet - cannot confirm the status vocabulary (docs §9.8)")
+        else:
+            _info(f"project_plan_drafts.status values in use: {', '.join(map(str, values))}")
+            _info("  -> we write 'draft' (app/services/plan_persist.py).")
+            if "draft" not in values:
+                _warn("  -> 'draft' is NOT among them. Confirm before writing to production.")
+    except Exception as e:  # noqa: BLE001
+        _warn(f"could not sample project_plan_drafts.status: {e}")
+
+
 def main() -> int:
-    print("Oblivion agent layer — deployment healthcheck\n")
+    print("Oblivion agent layer - deployment healthcheck\n")
+
+    print("Environment")
     ok_config, settings = check_config()
     if not ok_config:
         return 1
+    provider_ok = check_provider(settings)
 
-    results = [check_provider(settings), check_supabase()]
+    print("\nSupabase connectivity")
+    if not check_supabase():
+        print("\nCannot reach Supabase - skipping the schema checks below.")
+        return 1
+
+    print("\nAgent schema (ours)")
+    schema_ok = check_agent_schema_exposed()
+    tables_ok = check_agent_tables() if schema_ok else False
+
+    print("\nCRM integration contract (the columns we read and write)")
+    crm_ok = check_crm_contract()
+
+    print("\nStorage")
+    storage_ok = check_storage_bucket()
+
+    print("\nDocumented assumptions (evidence only - never fails the run)")
+    report_assumptions()
+
+    results = [provider_ok, schema_ok, tables_ok, crm_ok, storage_ok]
     print()
     if all(results):
-        print("All checks passed — the local deployment is ready.")
+        print("All checks passed - the agent layer and the CRM agree on the schema.")
         return 0
-    print("Some checks failed — see [FAIL] lines above.")
+    print("Some checks failed - see [FAIL] lines above. Do not run the chain until they pass.")
     return 1
 
 
