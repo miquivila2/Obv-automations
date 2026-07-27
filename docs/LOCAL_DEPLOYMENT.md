@@ -77,7 +77,18 @@ SUPABASE_DB_URI=postgresql://postgres:<pw>@db.<test-project>.supabase.co:5432/po
 Apply every file in `supabase/migrations/` **in order** to the test database
 (Supabase SQL editor, or `psql "$SUPABASE_DB_URI" -f <file>` for each):
 `0001_agent_layer.sql`, `0002_gantt_task_ownership.sql`,
-`0003_gantt_task_details.sql`, `0004_project_repos.sql`.
+`0003_gantt_task_details.sql`, `0004_project_repos.sql`,
+`0005_qa_findings.sql`, `0006_artifact_examples.sql`.
+
+None of these is optional. `0005` backs Agent 8 (Final QA) and `0006` backs the
+few-shot library that Agents 2, 5 and the Judge query on every run — a missing
+table there fails the build loudly rather than degrading (docs §10).
+
+**Then expose the `agent` schema**: Supabase → Settings → API → *Exposed schemas*
+→ add `agent` → save. Supabase serves only `public` and `graphql_public` by
+default, so until you do this **every** `agent.*` read and write in this codebase
+fails. This is the single most likely first-run failure; step 5 checks for it
+explicitly.
 
 Also create a Storage bucket named **`budgets`** (Supabase → Storage) — the Budget
 agent uploads the generated `.docx` there.
@@ -86,7 +97,9 @@ agent uploads the generated `.docx` there.
 ```bash
 python -m app.healthcheck
 ```
-Expect three `[PASS]` lines (config, Ollama + model, Supabase). Fix any `[FAIL]`
+It verifies config, the model provider, Supabase connectivity, that the `agent`
+schema is exposed, that all six migrations landed, that every CRM column this
+codebase reads or writes exists, and the `budgets` bucket. Fix any `[FAIL]`
 before continuing.
 
 ### 6. Run the API
