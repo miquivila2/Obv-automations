@@ -228,10 +228,31 @@ Orchestrator's LLM is used only for the **progress summary in update mode**, whi
 does require reasoning about real code vs. plan.
 
 ### 5.2. Budget arithmetic in code, not in the LLM
-Agent 5 generates the **line items** (hours, rate, justification) but the sums,
-contingency and currency conversion are computed in Python. An LLM getting a
+Agent 5 generates the **structure** of each line (category, description, hours,
+tier, justification); every **number** is computed in Python. An LLM getting a
 multiplication wrong in a document that reaches the client is a real, avoidable
-risk.
+risk — so the model never does arithmetic.
+
+What the code actually computes today is deliberately small:
+- `budget_math.price_line_items` — `amount = hours × unit_rate` per line, and the
+  subtotal. `Decimal` with half-up rounding, no floats in the math. An unknown tier
+  raises `KeyError` rather than silently pricing the work at zero (§10, fail loud).
+- `budget_docx.render_budget_docx` — groups the priced lines by month and emits a
+  per-month subtotal plus a grand total. Presentation only; it adds no new math.
+
+And what it deliberately does **not** do:
+- **No IVA and no discounts** — locked decision, a human adds those in the CRM.
+- **No contingency.** Nothing anywhere computes one.
+- **No currency conversion.** `rates.resolve_currency` only *picks* a currency label
+  (USD for English meetings, MXN for Spanish, overridden by the project's
+  `preferred_currency`); it never converts an amount between currencies, and no
+  other code does either. A budget is priced in one currency, start to finish.
+- **One rate tier.** `rates.resolve_rates` returns a tier→rate dict but populates
+  only `'standard'`, from `projects.hourly_rate`. The dict shape means adding tiers
+  later is additive and doesn't change callers.
+
+The last three differ from the budget format the original spec says we reproduce.
+That was examined and **settled in favour of the current format** — see §9.12.
 
 ### 5.3. Judge/Wireframe overlap (accepted tradeoff)
 The Judge (Kimi K2 Thinking) shares a lab with the Wireframe (Kimi K2.5). The
@@ -393,6 +414,37 @@ and no 24/7 worker watching the table. Chosen over a dedicated queue
       requires an `X-Webhook-Secret` header matching `WEBHOOK_SECRET` — these
       endpoints write to the production CRM and spend model tokens, so a
       publicly reachable unauthenticated URL was not acceptable.
+12. ~~**Budget format vs. the original spec (FLOWSIGHT / Axo Capital)**~~ **DECIDED
+    (Session 6): the current, simpler format is the one we want.** The spec
+    (`Oblivion_MultiAgent_Structure_Plan.docx`, §3 "Agent 5 — Budget", the "Reuse"
+    row) describes the format we reproduce as "two-tier hourly rates, monthly
+    subtotals, contingency, market comparison, milestone payments" (wording verified
+    against the source document). Measured against what is actually built (§5.2):
+    - **Monthly subtotals** — implemented. `budget_docx.py` groups lines by month and
+      emits a per-month subtotal row, plus a grand total.
+    - **Two-tier hourly rates** — partial. `rates.resolve_rates` returns a tier→rate
+      dict, but populates only `'standard'`, because the CRM stores a single
+      `projects.hourly_rate`. The shape is ready; the second tier has no source of
+      truth yet.
+    - **Contingency, market comparison, milestone payments** — **not implemented at
+      all.** No code computes a contingency, compares rates against a market
+      reference, or emits a payment schedule.
+
+    **The resolution:** hours × rate with monthly subtotals is the format we ship.
+    Contingency, market comparison and milestone payments are **not** going to be
+    built — each would need an input nobody holds today (a contingency percentage, a
+    market-rate reference, milestone payment terms), and the simpler document is what
+    is actually wanted. The gap was real; the answer is that the spec's "Reuse" row
+    over-promises, not that the code under-delivers.
+
+    Consequence to honour: **the spec is now the stale one, not the code.** If that
+    "Reuse" row is ever used as a requirements source again, it should be read as
+    describing the historical Axo document, not this system's output.
+
+    **Not to be confused with the IVA/discount decision.** IVA and discounts are
+    absent *on purpose* (locked: a human adds them in the CRM, see §5.2). The items
+    above were absent because the question had never been asked; it has now been
+    asked and answered. Neither decision reopens the other.
 
 ### 3.6. Pending Lovable-side work (tracked here so it isn't lost)
 

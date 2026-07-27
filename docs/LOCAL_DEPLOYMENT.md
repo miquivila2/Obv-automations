@@ -156,6 +156,47 @@ so an agent write can never re-trigger the chain into a loop.
 > expose the port with a tunnel (`ngrok http 8000`) and use that URL in the hook.
 > Backend hosting for a real deployment is still undecided (docs §3.5).
 
+---
+
+## Linking a project to its GitHub repo (`agent.project_repos`)
+
+The Orchestrator's **update mode** (docs §9.3) reads real build progress from
+GitHub. It finds the repo through `agent.project_repos`, which maps one CRM project
+to one repo. **Nothing in the codebase ever writes to this table** — rows are added
+by hand, once per project. That's deliberate rather than a missing feature: which
+repo a project lives in is an operational fact nobody can infer from a meeting
+transcript.
+
+Why it isn't a `github_repo` column on `public.projects`, which would be the obvious
+place: the production-safety contract (docs §3.4, §9.3) forbids adding *anything* to
+the CRM's `public` schema — additions count, not just alterations. So the link lives
+in our own `agent` schema instead.
+
+Add a row via Supabase → Table Editor → schema `agent` → `project_repos` → *Insert
+row*, or in the SQL editor:
+
+```sql
+insert into agent.project_repos (project_id, owner, repo)
+values ('00000000-0000-0000-0000-000000000000', 'miquivila2', 'Obv-automations');
+```
+
+- `project_id` — the `public.projects.id` uuid of the CRM project.
+- `owner` / `repo` — split from `github.com/<owner>/<repo>`. The bare repo name
+  only: no URL, no `.git` suffix.
+
+`project_id` is `unique`, so a second insert for the same project fails; use
+`update` to repoint a project at a different repo.
+
+**Until a project has a row, update mode fails.** `fetch_code_progress_snapshot`
+raises a `ValueError` naming the project and this table. That's intentional (docs
+§10, "fail loud"): an empty progress summary would flow into the Gantt re-sync
+looking exactly like "no work has been done".
+
+**`GITHUB_TOKEN` (optional)** — a read-only PAT, set in `.env` (see `app/config.py`).
+Without it the GitHub calls go out unauthenticated, which works fine for public
+repos but at a much lower rate limit (60 requests/hour per IP, vs. 5,000
+authenticated). A private repo requires the token.
+
 ## Choosing a model
 
 `OLLAMA_MODEL` is one model for every agent by default (simplest). Pick by machine:
