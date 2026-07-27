@@ -25,7 +25,7 @@ def test_follow_up_enters_at_its_sub_type():
 
 
 def test_follow_up_without_sub_type_is_an_error():
-    with pytest.raises(ValueError):52.2
+    with pytest.raises(ValueError):
         route({"meeting_class": "follow_up", "sub_type": None})
 
 
