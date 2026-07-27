@@ -94,10 +94,11 @@ The wireframe is the only artifact the CRM has no table for, so it lives in our
 
 | Agent | Reads from | Writes to |
 |-------|------------|-----------|
-| 2 Wireframe | `agent.meeting_intake` + past-wireframe library (few-shot) + whiteboard photo if any | `agent.wireframe_drafts` (new) |
+| 2 Wireframe | `agent.meeting_intake` + `agent.artifact_examples` (few-shot, §9.4) + whiteboard photo if any | `agent.wireframe_drafts` (new) |
 | 3 Planner | intake + latest wireframe | **`public.project_plan_drafts`** (existing CRM table: `payload`, `warnings`, `approved_at`) |
 | 4 Gantt | latest plan draft | **`public.gantt_tasks`** (existing CRM table; `source_draft_id` links back to the plan draft) |
-| 5 Budget | latest Gantt + past-budget library + rates | **`public.budget_line_items`** (existing CRM table: `quantity`/`unit_rate`/`amount`/`source`) + a `.docx` in Storage |
+| 5 Budget | latest Gantt + `agent.artifact_examples` (few-shot, §9.4) + rates | **`public.budget_line_items`** (existing CRM table: `quantity`/`unit_rate`/`amount`/`source`) + a `.docx` in Storage |
+| 6 Judge | the draft + notes + `agent.artifact_examples` **gold only** (§9.4) | `agent.artifact_feedback` |
 
 Rates are read from `public.projects` (`hourly_rate`, `currency`, `preferred_currency`)
 and `public.team_members` (`day_rate`) — the CRM already holds them, so there is no
@@ -375,11 +376,42 @@ and no 24/7 worker watching the table. Chosen over a dedicated queue
    new column on `public.projects`, per the no-touch-`public` contract. Auth is
    an optional read-only PAT (`GITHUB_TOKEN`); update mode raises a clear error
    if a project has no repo row rather than summarizing nothing.
-4. **Example libraries** — where do past wireframes/budgets live and how are the
-   "best" ones tagged so the few-shot uses good references, not just recent ones?
-   NOTE: client examples (e.g. the Axo Capital budget) are CONFIDENTIAL — never
-   commit them to this public repo (see `.gitignore`); they belong in Supabase
-   Storage or a private location.
+4. ~~**Example libraries**~~ **DECIDED & IMPLEMENTED (this session):**
+   `agent.artifact_examples` (migration `0006_artifact_examples.sql`), read via
+   `app/services/example_library.py`. Three decisions worth the reasoning:
+
+   - **Stored as jsonb in the shape the builder EMITS, not as a rendered file.**
+     Agent 5 outputs line items (category/hours/tier/justification) with the
+     arithmetic in code (§5.2), so grounding it in a finished `.docx` would show
+     it the wrong artifact. Storage still holds the rendered budgets — that's
+     Agent 5's *output*, not its reference material. Consequence to accept:
+     seeding the FLOWSIGHT/Axo gold standards means transcribing those documents
+     into line-item JSON once, by hand. That is the real cost of this choice and
+     it was taken deliberately.
+   - **"Best" is a human-curated `is_gold` flag — never derived from Judge
+     approvals.** Auto-promoting whatever the Judge approved is circular: the
+     Judge would then grade against examples it promoted itself, and the
+     system's own average output becomes its own standard, one approval at a
+     time. A row is exemplary because a human said so.
+   - **Two selection policies, on purpose.** Builders (Agents 2, 5) take gold
+     first then most recent — something real to imitate beats nothing. The Judge
+     takes **gold only**; the bar it measures against must not drift downward.
+     Enforced by `load_examples` vs. `load_gold_examples` and covered by
+     `tests/test_example_library.py`.
+
+   An unseeded library is not an error: it yields an empty prompt block and the
+   build runs without few-shot grounding.
+
+   **Known and expected: the wireframe library starts empty and cannot be
+   back-filled.** Agent 2's JSON schema was invented by this system (§9.1), so
+   no historical wireframe exists in that shape — the earliest entries can only
+   come from this system's own output, blessed by a human. Budgets have no such
+   problem (two real gold standards already exist).
+
+   Unchanged: client examples are CONFIDENTIAL — they live in Supabase, never in
+   this public repo. `.gitignore` blocks `examples/`, `*.docx` and `*.pdf`, and
+   migration 0006 creates the table EMPTY; seeding is a database task, never a
+   commit.
 5. **Model-in-region verification** — confirm the 7 model IDs are enabled in
    `AWS_REGION` with `aws bedrock list-foundation-models`, and that `langchain-aws`
    talks to them via the Converse API. First real technical step.

@@ -5,8 +5,10 @@ the meeting notes. Uses Kimi K2.5 for its native vision — it can read a
 whiteboard photo from the meeting — plus reliable structured output.
 
 Inputs: meeting notes (+ project), a library of past wireframes as few-shot
-examples (pending the example-library decision, docs §9), and an optional
-whiteboard image (not yet carried by the ingestion path — see note below).
+examples (agent.artifact_examples — docs §9.4; expected EMPTY for a while, see
+that section: this artifact's JSON schema was invented here, so no historical
+wireframe exists in it yet), and an optional whiteboard image (not yet carried
+by the ingestion path — see note below).
 
 Modes: create (fresh) | follow-up (load latest, change only what the notes ask).
 
@@ -66,6 +68,7 @@ class WireframeDraft(BaseModel):
 async def build_wireframe(state: BuildState) -> BuildState:
     from app.config import model_id_for
     from app.services.bedrock import chat_model_for
+    from app.services.example_library import format_examples_block, load_examples
     from app.services.wireframe_persist import load_latest_wireframe
 
     prior = ""
@@ -81,7 +84,11 @@ async def build_wireframe(state: BuildState) -> BuildState:
         "user roles see each screen, and navigation between them. If the notes lack enough "
         "detail to infer a coherent screen, do NOT invent it — omit it rather than guess."
     )
-    human = f"Meeting notes:\n{state['notes']}{prior}"
+    examples = format_examples_block(
+        load_examples("wireframe"),
+        heading="Past wireframes to match in structure and level of detail (do NOT copy their screens):",
+    )
+    human = f"Meeting notes:\n{state['notes']}{prior}{examples}"
 
     # If a whiteboard photo is available it would be attached to the human message here
     # (Kimi K2.5 has native vision) — left out until the ingestion path carries images

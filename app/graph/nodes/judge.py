@@ -15,6 +15,11 @@ Two design points from the architecture review baked in here:
     one round instead of inventing changes. This is stated explicitly in the
     system prompt because it's the failure mode a critical model falls into.
 
+Also reads the gold-standard example library (docs §9.4) for the artifact type
+under review — GOLD ONLY, never merely-recent examples, so the bar can't drift
+downward as the system's own output accumulates. See app/services/
+example_library.py.
+
 The loop cap (2 rounds) and the "never approved -> needs_human_review" outcome
 live in the graph edges (app/graph/build.py), not here. This node just
 produces one verdict for one draft.
@@ -73,6 +78,7 @@ async def judge(state: BuildState) -> BuildState:
     """Review the current draft against the notes using the artifact's rubric."""
     from app.config import model_id_for
     from app.db.client import get_supabase
+    from app.services.example_library import format_examples_block, load_gold_examples
 
     artifact_type = state["current_artifact_type"]
     rubric = _RUBRICS[artifact_type]
@@ -93,7 +99,14 @@ async def judge(state: BuildState) -> BuildState:
         "Do not invent changes to look thorough. Only reject for real, actionable problems.\n\n"
         f"Criteria for a {artifact_type}:\n{rubric}"
     )
-    human = f"Source notes:\n{state['notes']}\n\nDraft ({artifact_type}):\n{state['draft']}"
+    # GOLD ONLY here (see example_library's module docstring): the Judge measures
+    # a draft against the standard, so a merely-recent example must never become
+    # the bar it judges by.
+    standard = format_examples_block(
+        load_gold_examples(artifact_type),
+        heading="Oblivion's gold-standard reference for this artifact type — judge against this bar:",
+    )
+    human = f"Source notes:\n{state['notes']}\n\nDraft ({artifact_type}):\n{state['draft']}{standard}"
 
     result: JudgeVerdict = await model.ainvoke([("system", system), ("human", human)])
     new_round = incoming_round + 1

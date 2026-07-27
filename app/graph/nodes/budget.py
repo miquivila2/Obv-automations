@@ -14,7 +14,7 @@ override allowed); rates one-or-two-tier from the CRM; NO automatic IVA or
 discounts — a human adds those in the CRM.
 
 Inputs: the project's Gantt tasks (public.gantt_tasks) + past-budget examples
-(few-shot, pending the example-library decision). Output draft is priced here and
+(few-shot, from agent.artifact_examples — docs §9.4). Output draft is priced here and
 persisted by the graph's persist step (app.services.budget_persist), which upserts
 agent-owned lines rather than duplicating them on a follow-up regeneration
 (docs §5, gap #1/#2).
@@ -74,6 +74,7 @@ async def build_budget(state: BuildState) -> BuildState:
     from app.config import model_id_for
     from app.services.bedrock import chat_model_for
     from app.services.budget_math import price_line_items
+    from app.services.example_library import format_examples_block, load_examples
     from app.services.gantt_persist import load_latest_gantt_tasks
     from app.services.rates import resolve_currency, resolve_rates
 
@@ -104,7 +105,11 @@ async def build_budget(state: BuildState) -> BuildState:
         "in code. Only estimate hours and describe the work.\n"
         f"Available rate tiers: {list(rate_by_tier)}. Currency is {currency} (set in code)."
     )
-    human = f"Gantt tasks:\n{gantt_ctx}{prior}"
+    examples = format_examples_block(
+        load_examples("budget"),
+        heading="Past budgets to match in style and level of detail (do NOT copy their content):",
+    )
+    human = f"Gantt tasks:\n{gantt_ctx}{prior}{examples}"
     draft: BudgetDraft = await model.ainvoke([("system", system), ("human", human)])
 
     # Arithmetic in code — never trust the model for money (docs §5.2).
