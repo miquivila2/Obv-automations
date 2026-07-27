@@ -315,9 +315,23 @@ and no 24/7 worker watching the table. Chosen over a dedicated queue
    [...], "navigates_to": [...]}]}` — see `app/graph/nodes/wireframe.py:WireframeDraft`.
 2. ⚠️ **Final QA** — Agent 1 can classify "final_qa" but there's no owning agent.
    An Agent 8 (QA/acceptance), or just update status + generate handover docs?
-3. **Progress inspection (update mode)** — GitHub commits/PRs, an issue list in the
-   Axo #54–#82 style, or a status file the team maintains? Stub in
-   `app/services/github_progress.py` until decided.
+   **Explicitly deferred (this session):** not building either option yet — the
+   scope question isn't urgent. Both entry points into the graph (`POST
+   /webhooks/calendar-timer` and `POST /orchestrator/run`) return
+   `{"status": "final_qa_unhandled"}` instead of running the graph, so this
+   stays a clean no-op rather than an unhandled 500. `orchestrator.route()`
+   still raises `NotImplementedError` for `final_qa` as a defensive fallback,
+   in case a caller somehow reaches it without going through those guards
+   (docs §10 "fail loud").
+3. ~~**Progress inspection (update mode)**~~ **DECIDED & IMPLEMENTED:** GitHub
+   commits/PRs via the REST API, chosen over an issue-list convention or a
+   hand-maintained status file because it needs zero process discipline from the
+   team. `app/services/github_progress.py` fetches recent commits + PRs and
+   persists each snapshot to `agent.code_progress` (`source_ref` = head sha).
+   The project→repo link lives in `agent.project_repos` (migration 0004) — NOT a
+   new column on `public.projects`, per the no-touch-`public` contract. Auth is
+   an optional read-only PAT (`GITHUB_TOKEN`); update mode raises a clear error
+   if a project has no repo row rather than summarizing nothing.
 4. **Example libraries** — where do past wireframes/budgets live and how are the
    "best" ones tagged so the few-shot uses good references, not just recent ones?
    NOTE: client examples (e.g. the Axo Capital budget) are CONFIDENTIAL — never
@@ -348,12 +362,16 @@ and no 24/7 worker watching the table. Chosen over a dedicated queue
    `agent.gantt_task_ownership`, since `gantt_tasks` has no source column) instead
    of leaving duplicate rows behind — see §5 and `0002_gantt_task_ownership.sql`.
    A human-created/edited row (no ownership record) is never touched.
-10. **Calendar timer → Agent 1 handoff** — `app/services/calendar_timer.py` detects
-    due meetings (Google Calendar sync already exists at the CRM level) but
-    `process_due_event` intentionally raises `NotImplementedError`: it needs (a)
-    Plaud's transcript (item 7) and (b) confirmation of what `public.events.
-    attendee_ids` actually contains (email strings? team_member uuids?) before
-    resolving attendee emails for classification — not guessed at.
+10. **Calendar timer → Agent 1 handoff** — `process_due_event` is now wired end
+    to end except for the transcript. Attendee resolution proceeds under a
+    documented ASSUMPTION: `public.events.attendee_ids` holds email strings
+    (`calendar_timer._resolve_attendee_emails`). **Verify against production
+    data** — if they're `team_members` uuids instead, that one function becomes
+    an id→email lookup and nothing else changes. `language` likewise has no
+    per-project source on this automatic path yet and defaults to `'es'`. The
+    only hard blocker left is the transcript: `app/services/plaud_client.py`
+    `fetch_transcript` raises `NotImplementedError` until Plaud access lands
+    (item 7).
 11. **Audit findings (post-Session 5 review against the original spec doc)** —
     tracked status of the four gaps found:
     - ~~**Gap #1: source-tracking for regeneration**~~ **DECIDED & FIXED** —
@@ -367,23 +385,34 @@ and no 24/7 worker watching the table. Chosen over a dedicated queue
       since `public.gantt_tasks` has no column for one and we don't alter CRM
       tables. Same lifecycle as `gantt_task_ownership`: written/deleted alongside
       the matching CRM row, never touching a row the agent doesn't own.
-    - **Gap #4: Supabase Database Webhook is unconfigured** — still open. Only
-      the receiving endpoint (`POST /webhooks/artifact-changed`) exists; nothing
-      on the Supabase side is set up to actually call it when a CRM row changes.
-      A deployment task, not a design question.
+    - ~~**Gap #4: Supabase Database Webhook is unconfigured**~~ **DOCUMENTED,
+      pending execution** — the exact per-table setup steps are now in
+      `docs/LOCAL_DEPLOYMENT.md` ("Wiring the artifact-changed webhook").
+      It remains a deployment task the user performs in the Supabase dashboard;
+      there is no code left to write. Related: every trigger endpoint now
+      requires an `X-Webhook-Secret` header matching `WEBHOOK_SECRET` — these
+      endpoints write to the production CRM and spend model tokens, so a
+      publicly reachable unauthenticated URL was not acceptable.
 
 ### 3.6. Pending Lovable-side work (tracked here so it isn't lost)
 
-This repo never touches Lovable's code — anything requiring a CRM screen or a
-Lovable-managed table has to be built by the user, in Lovable. Standing items:
+This repo never touches Lovable's code — anything requiring a CRM screen has to
+be built by the user, in Lovable. This is a **private, internal CRM**: no
+approval-workflow ceremony is wanted (no "pending review" states, no "human must
+approve" gates, no source-flip-on-edit mechanics). Default assumption is
+**nothing needs building** — agent-written rows in `agent.wireframe_drafts` /
+`agent.meeting_intake` can be viewed via Supabase's own Table Editor when needed,
+zero Lovable work required. If something in either table doesn't look right, it
+gets edited directly like any other CRM data — no special workflow.
 
-- **Wireframe screen** — `agent.wireframe_drafts` has no CRM UI to view/edit it.
-  Deferred (blocked on Lovable access/tokens). When resumed, it must be a screen
-  *inside* the CRM itself (docs §3.5), built via Lovable prompts.
-- **General rule going forward**: whenever this repo's design needs a new
-  Lovable-facing screen or a table that should live in `public` (not `agent`),
-  that gets flagged explicitly to the user rather than assumed — this repo does
-  not build it.
+- **Wireframe screen** — optional convenience, not a blocker. Deferred (blocked
+  on Lovable access/tokens anyway). If/when built, it should be a screen *inside*
+  the CRM itself (docs §3.5), via Lovable prompts — but the Table Editor already
+  covers "can a human see it" today.
+- **General rule going forward**: only flag a Lovable-facing need to the user
+  when it's a real functional blocker, not a nice-to-have or a formal workflow
+  addition. Don't propose approval states, review-queue screens, or similar
+  ceremony unless the user asks for it.
 
 ---
 

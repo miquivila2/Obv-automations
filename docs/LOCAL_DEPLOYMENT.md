@@ -74,8 +74,10 @@ SUPABASE_DB_URI=postgresql://postgres:<pw>@db.<test-project>.supabase.co:5432/po
 > schema (see `supabase/migrations/0001_agent_layer.sql`), but production is off-limits
 > until we've validated locally.
 
-Apply `supabase/migrations/0001_agent_layer.sql` to the test database (Supabase SQL
-editor, or `psql "$SUPABASE_DB_URI" -f supabase/migrations/0001_agent_layer.sql`).
+Apply every file in `supabase/migrations/` **in order** to the test database
+(Supabase SQL editor, or `psql "$SUPABASE_DB_URI" -f <file>` for each):
+`0001_agent_layer.sql`, `0002_gantt_task_ownership.sql`,
+`0003_gantt_task_details.sql`, `0004_project_repos.sql`.
 
 Also create a Storage bucket named **`budgets`** (Supabase → Storage) — the Budget
 agent uploads the generated `.docx` there.
@@ -119,9 +121,40 @@ curl -X POST http://localhost:8000/internal/calendar-timer/tick
 Cron (Linux/macOS): `*/5 * * * * curl -s -X POST http://localhost:8000/internal/calendar-timer/tick`
 Windows: a Task Scheduler task running that `curl` on a 5-minute trigger.
 
+If `WEBHOOK_SECRET` is set, add `-H "X-Webhook-Secret: <value>"` to that curl.
+
 Today this will report due events as **failed** with a clear reason — transcript
-fetching (Plaud) and attendee-email resolution aren't wired yet (see
-`app/services/calendar_timer.py`). That's expected until Plaud's integration lands.
+fetching is still blocked on Plaud Developer Platform access (see
+`app/services/plaud_client.py`). Attendee-email resolution IS wired, under a
+documented assumption about `public.events.attendee_ids` (docs §9.10).
+
+---
+
+## Wiring the artifact-changed webhook (Supabase)
+
+The manual-edit re-trigger loop (docs §7) needs Supabase to call this app when a
+human edits an artifact. The receiving endpoint exists; the Supabase side is
+config, done once per environment (Supabase → Database → Webhooks → *Create a new
+hook*), for each of these tables:
+
+| Table | Schema |
+|-------|--------|
+| `project_plan_drafts` | `public` |
+| `gantt_tasks` | `public` |
+| `budget_line_items` | `public` |
+| `wireframe_drafts` | `agent` |
+
+For each hook:
+- **Events**: `UPDATE` (and `INSERT` if human-created rows should also cascade)
+- **Type**: HTTP Request → `POST` → `https://<your-host>/webhooks/artifact-changed`
+- **HTTP Headers**: `Content-Type: application/json` and `X-Webhook-Secret: <your WEBHOOK_SECRET>`
+
+The endpoint acts only on `source='human'` rows and ignores `source='agent'` ones,
+so an agent write can never re-trigger the chain into a loop.
+
+> ⚠️ `localhost` is not reachable from Supabase's servers. For local testing,
+> expose the port with a tunnel (`ngrok http 8000`) and use that URL in the hook.
+> Backend hosting for a real deployment is still undecided (docs §3.5).
 
 ## Choosing a model
 

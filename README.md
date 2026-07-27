@@ -43,16 +43,20 @@ Python · FastAPI · LangGraph (build graph + Postgres checkpointer) · Supabase
 ```
 app/
   config.py            # settings + MODEL_REGISTRY (single source of truth for models)
-  main.py              # FastAPI: the 3 push triggers
+  main.py              # FastAPI: the push triggers (all behind X-Webhook-Secret)
   db/                  # Supabase client + LangGraph checkpointer (two separate connections)
-  services/            # ingestion, classification, artifacts, bedrock factory, github stub
+  services/            # ingestion, classification, persistence, model factory,
+                       # github progress, run tracking, calendar timer, plaud client
   graph/
     state.py           # BuildState threaded through the graph
-    build.py           # graph assembly + the Judge-loop edge mechanics
+    build.py           # graph assembly + Judge-loop edges + agent.runs tracking
     nodes/             # orchestrator, judge, and the 4 builder nodes
-supabase/migrations/   # 0001_init_schema.sql — the full schema, commented
+supabase/migrations/   # 0001-0004, applied in order — the schema, commented
 docs/ARCHITECTURE.md   # the master document
-tests/                 # classification + routing
+docs/LOCAL_DEPLOYMENT.md  # running locally with Ollama + wiring the Supabase webhook
+tests/                 # 90 tests: routing, classification, judge loop + feedback,
+                       # persistence (wireframe/plan/gantt/budget), docx, github
+                       # progress, run tracking, calendar timer, HTTP endpoints
 ```
 
 ## Run it
@@ -64,8 +68,8 @@ pip install -e ".[dev]"
 # 2. Configure
 cp .env.example .env      # then fill in Supabase + AWS values
 
-# 3. Apply the schema to your Supabase project
-#    (via the Supabase SQL editor or CLI): supabase/migrations/0001_init_schema.sql
+# 3. Apply the schema to your Supabase project, in order
+#    (Supabase SQL editor or psql): every file in supabase/migrations/
 
 # 4. Verify the 7 models are enabled in your region (see docs §9.5)
 aws bedrock list-foundation-models --region us-east-1 --query "modelSummaries[].modelId"
@@ -77,8 +81,24 @@ uvicorn app.main:app --reload
 pytest
 ```
 
+Running locally without AWS (Ollama) and wiring the Supabase webhook:
+see [`docs/LOCAL_DEPLOYMENT.md`](docs/LOCAL_DEPLOYMENT.md).
+
 ## Status
 
-Skeleton per the build order in [ARCHITECTURE §8/§9](docs/ARCHITECTURE.md). Known stubs,
-all documented in §9: Plaud export (manual for now), GitHub progress inspection, the exact
-wireframe JSON schema, the Final QA agent, and the .docx rendering step for the budget.
+The build chain runs end to end (Agents 1–7, Judge loop, persistence to the CRM
+and the `agent` schema). Remaining gaps, all tracked in
+[ARCHITECTURE §9](docs/ARCHITECTURE.md):
+
+- **Plaud transcript fetch** (§9.7) — the one hard blocker, awaiting Developer
+  Platform access. `app/services/plaud_client.py` is the single swap point; the
+  calendar timer is wired up to it and everything downstream is ready.
+- **`events.attendee_ids` shape** (§9.10) — resolved under a documented
+  assumption (email strings); verify against production data.
+- **`project_plan_drafts.status` vocabulary** (§9.8) — we write `'draft'` as an
+  assumption; confirm against the real CRM.
+- **Final QA agent** (§9.2) — deliberately deferred; both entry points return a
+  clean `final_qa_unhandled` instead of running the graph.
+- **Supabase Database Webhook** (§11 gap #4) — no code left to write; the setup
+  steps are in `docs/LOCAL_DEPLOYMENT.md`.
+- **Backend hosting** (§3.5) — undecided.

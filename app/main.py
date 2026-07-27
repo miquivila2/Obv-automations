@@ -28,17 +28,37 @@ Three inbound triggers, all push (no polling anywhere — see docs §7):
 
 Graph runs are keyed by thread_id = project_id, so the checkpointer can resume
 the right project's state on a follow-up or human-review continuation.
+
+AUTH: every trigger endpoint above requires the `X-Webhook-Secret` header to
+match `settings.webhook_secret`. These endpoints write to the production CRM
+(plan drafts, Gantt tasks, budget line items) and cost real model tokens, so an
+unauthenticated public URL is not an option. /health is deliberately open, so a
+load balancer or uptime check needs no secret.
 """
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
+from app.config import get_settings
 from app.db.checkpointer import get_checkpointer
 from app.db.client import get_supabase
 from app.graph.build import build_graph
 from app.graph.state import ArtifactType, BuildState
 from app.services.ingestion import ingest_meeting
+
+
+def require_webhook_secret(x_webhook_secret: str | None = Header(None)) -> None:
+    """Shared-secret gate for every trigger endpoint. When no secret is
+    configured the app is in local dev — allow, but that's the only case."""
+    import secrets
+
+    expected = get_settings().webhook_secret
+    if expected is None:
+        return
+    if x_webhook_secret is None or not secrets.compare_digest(x_webhook_secret, expected):
+        raise HTTPException(status_code=401, detail="invalid or missing X-Webhook-Secret")
+
 
 app = FastAPI(title="Oblivion Multi-Agent Build Automation")
 
@@ -86,7 +106,7 @@ async def _run_graph(initial_state: BuildState) -> dict:
 # --------------------------------------------------------------------------
 # Endpoints
 # --------------------------------------------------------------------------
-@app.post("/webhooks/calendar-timer")
+@app.post("/webhooks/calendar-timer", dependencies=[Depends(require_webhook_secret)])
 async def calendar_timer(payload: CalendarTimerPayload) -> dict:
     """Agent 1 trigger. Ingest + classify; if confidently classified into an
     actionable class, kick the graph. Low-confidence meetings stop at the
@@ -110,12 +130,13 @@ async def calendar_timer(payload: CalendarTimerPayload) -> dict:
             "language": payload.language,
             "notes": payload.transcript_text,
             "judge_round": 0,
+            "trigger_source": "webhook",
         }
     )
     return {"status": "processed", "intake_id": intake["id"], "needs_human_review": result.get("needs_human_review", False)}
 
 
-@app.post("/webhooks/artifact-changed")
+@app.post("/webhooks/artifact-changed", dependencies=[Depends(require_webhook_secret)])
 async def artifact_changed(payload: ArtifactChangedPayload) -> dict:
     """The manual-edit re-trigger loop. Only human edits re-flow the chain;
     agent writes are ignored so the chain can't trigger itself (docs §7).
@@ -155,24 +176,31 @@ async def artifact_changed(payload: ArtifactChangedPayload) -> dict:
             "notes": "",  # follow-up here is driven by the edited upstream artifact, not new notes
             "edited_artifact_type": payload.type,
             "judge_round": 0,
+            "trigger_source": "webhook",
         }
     )
     return {"status": "re_triggered", "from": resume_from, "needs_human_review": result.get("needs_human_review", False)}
 
 
-@app.post("/orchestrator/run")
+@app.post("/orchestrator/run", dependencies=[Depends(require_webhook_secret)])
 async def orchestrator_run(payload: OrchestratorRunPayload) -> dict:
     """Direct graph kick for an already-classified meeting."""
-    result = await _run_graph({**payload.model_dump(), "judge_round": 0})
+    if payload.meeting_class == "final_qa":
+        # No owning agent yet (docs §9.2) — same explicit non-error state as
+        # POST /webhooks/calendar-timer, so a manual re-run can't 500 on this.
+        return {"status": "final_qa_unhandled"}
+
+    result = await _run_graph({**payload.model_dump(), "judge_round": 0, "trigger_source": "manual"})
     return {"status": "processed", "needs_human_review": result.get("needs_human_review", False)}
 
 
-@app.post("/internal/calendar-timer/tick")
+@app.post("/internal/calendar-timer/tick", dependencies=[Depends(require_webhook_secret)])
 async def calendar_timer_tick() -> dict:
     """Called by an external scheduler, not a user. See module docstring above
-    and app/services/calendar_timer.py — transcript/attendee resolution isn't
-    wired yet (pending Plaud), so due events currently report as failed with a
-    clear reason rather than silently doing nothing."""
+    and app/services/calendar_timer.py — attendee resolution is wired (under a
+    documented assumption, docs §9.10); transcript fetching is still blocked on
+    Plaud Developer Platform access, so due events currently report as failed
+    with a clear reason rather than silently doing nothing."""
     from app.services.calendar_timer import run_calendar_timer_once
 
     return await run_calendar_timer_once()

@@ -17,16 +17,18 @@ Design:
     be called on a schedule (cron / Task Scheduler / cloud scheduler) via the
     `POST /internal/calendar-timer/tick` endpoint — see docs/LOCAL_DEPLOYMENT.md.
 
-BOUNDARY WITH PLAUD (see docs §9, task pending real API docs): once an event is
-due, ingestion needs the meeting TRANSCRIPT and the attendee EMAILS. Neither is
-resolved here yet:
-  * Transcript: `export_plaud_note` (app/services/ingestion.py) is still a stub
-    that only echoes text handed to it — there's no fetch-by-meeting call yet.
-  * Attendee emails: `public.events.attendee_ids` shape (email strings? team
-    member uuids? something else?) hasn't been verified against real data — do
-    NOT guess at its meaning here. Resolve it once confirmed.
-`process_due_event` raises NotImplementedError rather than silently guessing
-at either, so the boundary is loud, not silently wrong.
+BOUNDARY WITH PLAUD (see docs §9): once an event is due, ingestion needs the
+meeting TRANSCRIPT and the attendee EMAILS.
+  * Attendee emails: `public.events.attendee_ids`' real shape (email strings?
+    team member uuids? something else?) hasn't been verified against
+    production data. Decided (this session): proceed under a documented
+    ASSUMPTION — they're email strings — rather than block on it (see
+    _resolve_attendee_emails). If that assumption turns out wrong, swap that
+    one function for a public.team_members(id -> email) lookup; nothing else
+    downstream (classification, the build graph) needs to change.
+  * Transcript: still genuinely blocked on Plaud Developer Platform access
+    (PLAUD_CLIENT_ID/PLAUD_API_KEY) — see app/services/plaud_client.py, the
+    one remaining NotImplementedError in this path.
 """
 from __future__ import annotations
 
@@ -74,7 +76,7 @@ def find_due_events(
 
     candidates = (
         supabase.table("events")
-        .select("id,end_at,project_id")
+        .select("id,end_at,project_id,attendee_ids")
         .gte("end_at", window_start)
         .lte("end_at", now.isoformat())
         .execute()
@@ -96,18 +98,37 @@ def find_due_events(
     return _events_due_for_processing(candidates, processed_ids, now, delay_minutes)
 
 
+def _resolve_attendee_emails(event: dict) -> list[str]:
+    """ASSUMPTION (docs §9.10, not yet verified against production data):
+    public.events.attendee_ids is a list of email strings. If that's wrong
+    (e.g. team_member uuids instead), this is the only function to change —
+    replace it with a public.team_members(id -> email) lookup."""
+    return [str(a) for a in (event.get("attendee_ids") or [])]
+
+
 async def process_due_event(event: dict) -> dict:
     """Resolve transcript + attendees for one due event and run Agent 1.
 
-    NOT IMPLEMENTED YET — deliberately. See module docstring "Boundary with
-    Plaud". Wire this once (a) Plaud's Developer Platform integration replaces
-    the export_plaud_note stub, and (b) events.attendee_ids' real shape is
-    confirmed against production data.
+    Attendee emails are resolved now (see _resolve_attendee_emails and its
+    documented assumption). The transcript fetch is still genuinely blocked on
+    Plaud Developer Platform access — see app/services/plaud_client.py, which
+    raises NotImplementedError until that access lands. `language` also has no
+    real source for this automatic path yet (unlike the manual webhook, which
+    takes it as an input); defaults to 'es' like the artifact-changed
+    re-trigger does (app/main.py) until a per-project language source exists.
     """
-    raise NotImplementedError(
-        f"process_due_event: event {event['id']} is due, but transcript fetching "
-        "(Plaud) and attendee resolution (events.attendee_ids shape) are not wired "
-        "yet — see docs/ARCHITECTURE.md §9 and app/services/calendar_timer.py."
+    from app.services.ingestion import ingest_meeting
+    from app.services.plaud_client import fetch_transcript
+
+    attendee_emails = _resolve_attendee_emails(event)
+    transcript = await fetch_transcript(event_id=event["id"], plaud_note_id=None)
+
+    return await ingest_meeting(
+        event_id=event["id"],
+        attendee_emails=attendee_emails,
+        language="es",
+        transcript_text=transcript,
+        plaud_note_id=None,
     )
 
 
