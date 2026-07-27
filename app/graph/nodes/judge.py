@@ -21,6 +21,7 @@ produces one verdict for one draft.
 """
 from __future__ import annotations
 
+import uuid
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -70,8 +71,18 @@ class JudgeVerdict(BaseModel):
 
 async def judge(state: BuildState) -> BuildState:
     """Review the current draft against the notes using the artifact's rubric."""
+    from app.config import model_id_for
+    from app.db.client import get_supabase
+
     artifact_type = state["current_artifact_type"]
     rubric = _RUBRICS[artifact_type]
+    incoming_round = state.get("judge_round", 0)
+
+    # A fresh artifact review (incoming_round == 0, reset by persist() when the
+    # chain advances to the next artifact type) gets a new ref id; a revise round
+    # (reject, round < cap) reuses the one already in state so all rounds for the
+    # same artifact group under one id.
+    draft_ref_id = state.get("draft_ref_id") if incoming_round > 0 else str(uuid.uuid4())
 
     model = chat_model_for("judge").with_structured_output(JudgeVerdict)
     system = (
@@ -85,10 +96,23 @@ async def judge(state: BuildState) -> BuildState:
     human = f"Source notes:\n{state['notes']}\n\nDraft ({artifact_type}):\n{state['draft']}"
 
     result: JudgeVerdict = await model.ainvoke([("system", system), ("human", human)])
+    new_round = incoming_round + 1
+
+    get_supabase().schema("agent").table("artifact_feedback").insert(
+        {
+            "artifact_type": artifact_type,
+            "artifact_ref": draft_ref_id,
+            "round": new_round,
+            "verdict": result.verdict,
+            "feedback_text": result.feedback,
+            "judge_model_id": model_id_for("judge"),
+        }
+    ).execute()
 
     return {
         **state,
-        "judge_round": state.get("judge_round", 0) + 1,
+        "judge_round": new_round,
         "judge_verdict": result.verdict,
         "judge_feedback": result.feedback,
+        "draft_ref_id": draft_ref_id,
     }

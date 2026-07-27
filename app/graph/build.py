@@ -24,6 +24,8 @@ in-code pricing happens in the per-artifact persist step, kept thin here.
 """
 from __future__ import annotations
 
+import inspect
+
 from langgraph.graph import END, START, StateGraph
 
 from app.config import get_settings
@@ -45,6 +47,35 @@ _BUILDER_NODES = {
     "gantt": gantt.build_gantt,
     "budget": budget.build_budget,
 }
+
+
+def _tracked(agent_name: str, fn):
+    """Wrap a node so every execution is recorded in agent.runs (docs §11):
+    a 'running' row on entry, 'success'/'failed' + timing on exit. Built once,
+    reused for every node — the same shared-helper principle as the Judge loop
+    (docs §6.1), applied to observability instead of review."""
+
+    async def _run(state: BuildState) -> BuildState:
+        from app.services.run_tracking import finish_run, start_run
+
+        run_id = start_run(
+            project_id=state.get("project_id"),
+            intake_id=state.get("intake_id"),
+            agent_name=agent_name,
+            trigger_source=state.get("trigger_source"),
+        )
+        try:
+            result = await fn(state) if inspect.iscoroutinefunction(fn) else fn(state)
+        except Exception as exc:
+            finish_run(run_id, status="failed", error=str(exc))
+            raise
+
+        draft = result.get("draft")
+        model_id = draft.get("model_id") if isinstance(draft, dict) else None
+        finish_run(run_id, status="success", model_id=model_id)
+        return result
+
+    return _run
 
 
 def _route_from_orchestrator(state: BuildState) -> str:
@@ -90,8 +121,9 @@ async def persist(state: BuildState) -> BuildState:
             payload=draft["payload"],
             model_id=draft["model_id"],
             intake_id=state.get("intake_id"),
+            id=state.get("draft_ref_id"),
         )
-        return state
+        return {**state, "judge_round": 0}
 
     if artifact_type == "plan":
         from app.services.plan_persist import persist_plan
@@ -102,20 +134,21 @@ async def persist(state: BuildState) -> BuildState:
             payload=draft["payload"],
             model_id=draft["model_id"],
             intake_id=state.get("intake_id"),
+            id=state.get("draft_ref_id"),
         )
-        return state
+        return {**state, "judge_round": 0}
 
     if artifact_type == "gantt":
         from app.services.gantt_persist import persist_gantt
 
         persist_gantt(project_id=project_id, draft=draft)
-        return state
+        return {**state, "judge_round": 0}
 
     if artifact_type == "budget":
         from app.services.budget_persist import persist_budget
 
         persist_budget(project_id=project_id, draft=draft)
-        return state
+        return {**state, "judge_round": 0}
 
     raise ValueError(f"no persistence wired for artifact type {artifact_type!r}")
 
@@ -136,14 +169,16 @@ def _human_review(state: BuildState) -> BuildState:
 def build_graph(checkpointer):
     g = StateGraph(BuildState)
 
-    # Orchestrator + update-mode progress summary
-    g.add_node("orchestrator", orchestrator.route)
-    g.add_node("progress_summary", orchestrator.summarize_progress)
+    # Orchestrator + update-mode progress summary. Both tracked as "orchestrator"
+    # in agent.runs — they're the same agent's two responsibilities (docs §7.1).
+    g.add_node("orchestrator", _tracked("orchestrator", orchestrator.route))
+    g.add_node("progress_summary", _tracked("orchestrator", orchestrator.summarize_progress))
 
     # Builders + shared Judge + human-review terminal
+    _RUN_TRACKING_NAME = {"wireframe": "wireframe", "plan": "planner", "gantt": "gantt", "budget": "budget"}
     for name, fn in _BUILDER_NODES.items():
-        g.add_node(name, fn)
-    g.add_node("judge", judge)
+        g.add_node(name, _tracked(_RUN_TRACKING_NAME[name], fn))
+    g.add_node("judge", _tracked("judge", judge))
     g.add_node("persist", persist)
     g.add_node("human_review", _human_review)
 

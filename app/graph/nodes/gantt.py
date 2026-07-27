@@ -55,6 +55,7 @@ class GanttDraft(BaseModel):
 
 
 async def build_gantt(state: BuildState) -> BuildState:
+    from app.config import model_id_for
     from app.services.bedrock import chat_model_for
     from app.services.plan_persist import load_latest_plan
 
@@ -92,5 +93,9 @@ async def build_gantt(state: BuildState) -> BuildState:
     return {
         **state,
         "current_artifact_type": "gantt",
-        "draft": {"payload": draft.model_dump(), "source_draft_id": plan.get("id") if plan else None},
+        "draft": {
+            "payload": draft.model_dump(),
+            "source_draft_id": plan.get("id") if plan else None,
+            "model_id": model_id_for("gantt"),
+        },
     }

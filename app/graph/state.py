@@ -24,6 +24,7 @@ class BuildState(TypedDict, total=False):
     sub_type: Optional[ArtifactType]  # which artifact a follow_up targets
     language: Literal["es", "en"]  # drives Budget currency
     notes: str  # the raw transcript, source of truth for every builder
+    trigger_source: Optional[str]  # 'webhook' | 'manual' | 'resume' — recorded onto agent.runs (docs §11)
 
     # --- Set by the Orchestrator, read by the builders ---
     entry_agent: ArtifactType  # where the chain starts (2/3/4/5 -> its artifact type)
@@ -36,9 +37,16 @@ class BuildState(TypedDict, total=False):
     # --- Judge loop bookkeeping, per artifact currently in flight ---
     current_artifact_type: Optional[ArtifactType]
     draft: Optional[dict]  # the builder's current draft, awaiting or post Judge
-    judge_round: int  # 0, 1, or 2
+    judge_round: int  # 0, 1, or 2 — reset to 0 by persist() when advancing to the next artifact
     judge_verdict: Optional[Literal["approve", "reject"]]
     judge_feedback: Optional[str]
+    # Stable id for the artifact currently being reviewed, across all its Judge
+    # rounds (generated fresh each time judge_round starts at 0). Used as
+    # agent.artifact_feedback.artifact_ref, and — for wireframe/plan, which insert
+    # one row per version — as that row's own id, so feedback and the persisted
+    # row line up. Gantt/Budget are multi-row artifacts with no single row to
+    # anchor to, so for them this is just a stable grouping key across rounds.
+    draft_ref_id: Optional[str]
 
     # --- Terminal signalling ---
     needs_human_review: bool  # set true when the Judge never approved within the cap

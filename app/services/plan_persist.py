@@ -35,30 +35,31 @@ def load_latest_plan(project_id: str) -> dict | None:
     return rows[0] if rows else None
 
 
-def persist_plan(*, project_id: str, brief: str, payload: dict, model_id: str, intake_id: str | None) -> dict:
+def persist_plan(
+    *, project_id: str, brief: str, payload: dict, model_id: str, intake_id: str | None, id: str | None = None
+) -> dict:
     """Insert a new agent-authored plan draft. Returns the created row (with id,
-    needed by Gantt's source_draft_id)."""
+    needed by Gantt's source_draft_id).
+
+    `id`, when given, is the Judge's draft_ref_id for this draft (see
+    app/graph/nodes/judge.py) — passing it through means agent.artifact_feedback
+    rows for this draft point at the same id this row ends up with."""
     from app.db.client import get_supabase
 
-    row = (
-        get_supabase()
-        .table("project_plan_drafts")
-        .insert(
-            {
-                "project_id": project_id,
-                "status": "draft",  # see ASSUMPTION TO VERIFY above
-                "brief": brief,
-                "payload": payload,
-                "warnings": [],
-                "pipeline_meta": {
-                    "agent": "planner",
-                    "model_id": model_id,
-                    "source_intake_id": intake_id,
-                    "source": "agent",
-                },
-            }
-        )
-        .execute()
-        .data[0]
-    )
+    row_data = {
+        "project_id": project_id,
+        "status": "draft",  # see ASSUMPTION TO VERIFY above
+        "brief": brief,
+        "payload": payload,
+        "warnings": [],
+        "pipeline_meta": {
+            "agent": "planner",
+            "model_id": model_id,
+            "source_intake_id": intake_id,
+            "source": "agent",
+        },
+    }
+    if id is not None:
+        row_data["id"] = id
+    row = get_supabase().table("project_plan_drafts").insert(row_data).execute().data[0]
     return row

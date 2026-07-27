@@ -36,27 +36,34 @@ def _next_version(project_id: str) -> int:
     return (latest["version"] + 1) if latest else 1
 
 
-def persist_wireframe(*, project_id: str, payload: dict, model_id: str, intake_id: str | None) -> dict:
-    """Insert a new agent-authored wireframe version. Returns the created row."""
+def persist_wireframe(
+    *, project_id: str, payload: dict, model_id: str, intake_id: str | None, id: str | None = None
+) -> dict:
+    """Insert a new agent-authored wireframe version. Returns the created row.
+
+    `id`, when given, is the Judge's draft_ref_id for this version (see
+    app/graph/nodes/judge.py) — passing it through means agent.artifact_feedback
+    rows for this draft point at the same id this row ends up with."""
     from app.db.client import get_supabase
 
     version = _next_version(project_id)
+    row_data = {
+        "project_id": project_id,
+        "version": version,
+        "status": "draft",
+        "payload": payload,
+        "warnings": [],
+        "pipeline_meta": {"agent": "wireframe", "model_id": model_id},
+        "source": "agent",
+        "source_intake_id": intake_id,
+    }
+    if id is not None:
+        row_data["id"] = id
     row = (
         get_supabase()
         .schema("agent")
         .table("wireframe_drafts")
-        .insert(
-            {
-                "project_id": project_id,
-                "version": version,
-                "status": "draft",
-                "payload": payload,
-                "warnings": [],
-                "pipeline_meta": {"agent": "wireframe", "model_id": model_id},
-                "source": "agent",
-                "source_intake_id": intake_id,
-            }
-        )
+        .insert(row_data)
         .execute()
         .data[0]
     )
