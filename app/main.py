@@ -46,6 +46,7 @@ from app.db.client import get_supabase
 from app.graph.build import build_graph
 from app.graph.state import ArtifactType, BuildState
 from app.services.ingestion import ingest_meeting
+from app.services.qa_check import run_final_qa_check
 
 
 def require_webhook_secret(x_webhook_secret: str | None = Header(None)) -> None:
@@ -123,8 +124,13 @@ async def calendar_timer(payload: CalendarTimerPayload) -> dict:
         return {"status": "pending_review", "intake_id": intake["id"]}
 
     if classification["meeting_class"] == "final_qa":
-        # No owning agent yet (docs §9.2) — don't route it into the graph.
-        return {"status": "final_qa_unhandled", "intake_id": intake["id"]}
+        # Agent 8 (docs §9.2) — read-only scope-switch check, not the build graph.
+        result = await run_final_qa_check(
+            project_id=classification["project_id"],
+            intake_id=intake["id"],
+            notes=payload.transcript_text,
+        )
+        return {"status": "final_qa_checked", "intake_id": intake["id"], **result}
 
     result = await _run_graph(
         {
@@ -191,9 +197,11 @@ async def artifact_changed(payload: ArtifactChangedPayload) -> dict:
 async def orchestrator_run(payload: OrchestratorRunPayload) -> dict:
     """Direct graph kick for an already-classified meeting."""
     if payload.meeting_class == "final_qa":
-        # No owning agent yet (docs §9.2) — same explicit non-error state as
-        # POST /webhooks/calendar-timer, so a manual re-run can't 500 on this.
-        return {"status": "final_qa_unhandled"}
+        # Agent 8 (docs §9.2) — same read-only check as the calendar-timer path.
+        result = await run_final_qa_check(
+            project_id=payload.project_id, intake_id=payload.intake_id, notes=payload.notes,
+        )
+        return {"status": "final_qa_checked", **result}
 
     result = await _run_graph({**payload.model_dump(), "judge_round": 0, "trigger_source": "manual"})
     return {"status": "processed", "needs_human_review": result.get("needs_human_review", False)}

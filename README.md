@@ -1,8 +1,8 @@
 # Obv-automations
 
-**Oblivion Multi-Agent Build Automation** — seven specialized AI agents that turn a
+**Oblivion Multi-Agent Build Automation** — eight specialized AI agents that turn a
 client meeting into four project deliverables (wireframe, build plan, Gantt, budget),
-automatically.
+automatically, plus a read-only Final QA scope check at acceptance time.
 
 > New here? Read **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** first. It's the
 > master document: objective, data flow, classification logic, model choices, and the
@@ -25,10 +25,14 @@ meeting ──30min──▶ [1 Meeting Notes] ─▶ [7 Orchestrator] ─▶ [2
   one's output from Supabase.
 - **Agent 6 (Judge)** reviews every artifact before it's written (max 2 rounds, then
   flagged for human review).
+- **Agent 8 (Final QA)** runs outside this chain: when a meeting is classified
+  `final_qa`, it compares the notes against the agreed plan and notifies a human
+  (via `agent.qa_findings`) only if the client is asking for something beyond it —
+  it never writes to the CRM or changes anything.
 
 ## Models
 
-All seven agents run **open-weight models on AWS Bedrock on-demand** (pay-per-token, no
+All eight agents run **open-weight models on AWS Bedrock on-demand** (pay-per-token, no
 idle GPU). The registry — which model runs which agent, and why — is the single source
 of truth in [`app/config.py`](app/config.py) → `MODEL_REGISTRY`. Strategy and tradeoffs
 are explained in [ARCHITECTURE §5](docs/ARCHITECTURE.md).
@@ -87,18 +91,17 @@ see [`docs/LOCAL_DEPLOYMENT.md`](docs/LOCAL_DEPLOYMENT.md).
 ## Status
 
 The build chain runs end to end (Agents 1–7, Judge loop, persistence to the CRM
-and the `agent` schema). Remaining gaps, all tracked in
-[ARCHITECTURE §9](docs/ARCHITECTURE.md):
+and the `agent` schema), plus Agent 8 (Final QA). Remaining gaps, all tracked
+in [ARCHITECTURE §9](docs/ARCHITECTURE.md):
 
-- **Plaud transcript fetch** (§9.7) — the one hard blocker, awaiting Developer
-  Platform access. `app/services/plaud_client.py` is the single swap point; the
-  calendar timer is wired up to it and everything downstream is ready.
+- **Plaud transcript fetch** (§9.7) — implemented via Plaud's own MCP server
+  (`app/services/plaud_client.py`); the OAuth token-reuse assumption is
+  verified. Only unverified piece left: `public.events.start_at`, needed for
+  the calendar-event/recording time-window match, against production data.
 - **`events.attendee_ids` shape** (§9.10) — resolved under a documented
   assumption (email strings); verify against production data.
 - **`project_plan_drafts.status` vocabulary** (§9.8) — we write `'draft'` as an
   assumption; confirm against the real CRM.
-- **Final QA agent** (§9.2) — deliberately deferred; both entry points return a
-  clean `final_qa_unhandled` instead of running the graph.
 - **Supabase Database Webhook** (§11 gap #4) — no code left to write; the setup
   steps are in `docs/LOCAL_DEPLOYMENT.md`.
 - **Backend hosting** (§3.5) — undecided.

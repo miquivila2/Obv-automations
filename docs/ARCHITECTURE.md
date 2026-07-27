@@ -11,7 +11,7 @@
 Turn **one client meeting into four project deliverables** — wireframe, build plan,
 Gantt and budget — automatically, with no manual work beyond review and editing.
 
-It's not a single program. It's a **team of 7 specialized agents**, each with a
+It's not a single program. It's a **team of 8 specialized agents**, each with a
 narrow job, coordinated by an orchestrator and kept honest by a shared judge. The
 core idea (from the original whiteboard): an agent that does one thing well is
 easier to reason about, test and replace than a mono-agent that does everything
@@ -36,6 +36,12 @@ meeting). Over-engineering here is an anti-pattern, not a virtue.
 | 4 | **Gantt** | Monthly milestones + tasks + Gantt | 3 or 7 | 5 |
 | 5 | **Budget** | Justified, priced budget (.docx) | 4 or 7 | — / back to 7 |
 | 6 | **Judge** | Review & approve any artifact (shared) | 2, 3, 4, 5 | back to caller |
+| 8 | **Final QA** | Detect scope switches in acceptance meetings vs. the agreed plan; notify a human only — never writes to the CRM | 1 (class=`final_qa`) | — (read-only finding, nothing downstream) |
+
+Agent 8 is deliberately outside the build chain and the graph: it does not go
+through the Orchestrator's routing table, the Judge loop, or LangGraph at all
+— `app/main.py` calls it directly, the same way it already special-cased
+`final_qa` before an owning agent existed. See §9.2.
 
 **The build chain is linear and sequential** — there's no real parallelism to
 exploit, because each agent depends on the previous one's artifact: the budget
@@ -189,7 +195,7 @@ the Orchestrator later uses to route:
 | **onboarding** | New project | Full chain from Agent 2 (create mode): 2→3→4→5 |
 | **follow_up** | An existing artifact needs revising (`sub_type` says which) | Jump to the owning agent in follow-up mode, then re-flow downstream |
 | **update** | Progress update on a live build | Orchestrator inspects the repo, compares vs. plan, and triggers what's needed (usually 4) |
-| **final_qa** | Acceptance stage | ⚠️ No owning agent yet — see §9 Open questions |
+| **final_qa** | Acceptance stage | Agent 8: read-only scope-switch check against the agreed plan; notifies a human via `agent.qa_findings` if the client is asking for something beyond it — see §9.2 |
 
 ### 4.3. Confidence threshold
 A result is only auto-applied if `confidence >= classification_confidence_threshold`
@@ -223,6 +229,7 @@ duplicate the full table here so it can't drift; this section explains the
 | 4 Gantt | `qwen.qwen3-next-80b-a3b-instruct` | Structured transformation; cheap |
 | 5 Budget | `qwen.qwen3-next-80b-a3b-instruct` | Long context for few-shot; arithmetic in code, not LLM |
 | 6 Judge | `moonshotai.kimi-k2-thinking` | Different lineage than the builders so it doesn't share blind spots |
+| 8 Final QA | `deepseek.v3.2` | Same tier as Planner — missing a real scope switch ships it unnoticed; asymmetric risk vs. a false positive |
 
 ### 5.1. Routing is NOT an LLM
 Deliberate decision: mapping class→agent is a **table**, not a judgment. The
@@ -337,16 +344,28 @@ and no 24/7 worker watching the table. Chosen over a dedicated queue
    JSON, persisted to `agent.wireframe_drafts` (the CRM has no table for this artifact
    type). Schema: `{"screens": [{"name", "purpose", "components": [...], "visible_to_roles":
    [...], "navigates_to": [...]}]}` — see `app/graph/nodes/wireframe.py:WireframeDraft`.
-2. ⚠️ **Final QA** — Agent 1 can classify "final_qa" but there's no owning agent.
-   An Agent 8 (QA/acceptance), or just update status + generate handover docs?
-   **Explicitly deferred (this session):** not building either option yet — the
-   scope question isn't urgent. Both entry points into the graph (`POST
-   /webhooks/calendar-timer` and `POST /orchestrator/run`) return
-   `{"status": "final_qa_unhandled"}` instead of running the graph, so this
-   stays a clean no-op rather than an unhandled 500. `orchestrator.route()`
-   still raises `NotImplementedError` for `final_qa` as a defensive fallback,
-   in case a caller somehow reaches it without going through those guards
-   (docs §10 "fail loud").
+2. ~~**Final QA**~~ **DECIDED & IMPLEMENTED (this session): Agent 8, scoped
+   deliberately narrow.** Not an acceptance/handover agent — it does one thing:
+   when Agent 1 classifies a meeting `final_qa`, compare what the client asks
+   for against the ORIGINAL agreed plan (`public.project_plan_drafts`, Agent
+   3's needs+phases — chosen over the wireframe or the raw onboarding
+   transcript because it's already the structured scope baseline Gantt/Budget
+   are built from downstream of). If the notes ask for something materially
+   different from or beyond that plan, it writes a finding to
+   `agent.qa_findings` (migration `0005_qa_findings.sql`) for a human to
+   review. It does **not** update any status, generate handover docs, or
+   touch any `public.*` row — a clean Final QA meeting produces no row at
+   all, nothing to notify. See `app/services/qa_check.py`.
+
+   Deliberately outside the graph: Agent 8 doesn't go through the
+   Orchestrator's routing table, the Judge loop, or LangGraph — `app/main.py`
+   calls `run_final_qa_check` directly from both `POST /webhooks/calendar-timer`
+   and `POST /orchestrator/run`, the same place that used to short-circuit to
+   `final_qa_unhandled`. `orchestrator.route()` still raises
+   `NotImplementedError` for `final_qa` as a defensive fallback (docs §10
+   "fail loud") for a caller that somehow reaches it without going through
+   those two entry points — that path is unchanged and still tested
+   (`tests/test_routing.py`).
 3. ~~**Progress inspection (update mode)**~~ **DECIDED & IMPLEMENTED:** GitHub
    commits/PRs via the REST API, chosen over an issue-list convention or a
    hand-maintained status file because it needs zero process discipline from the

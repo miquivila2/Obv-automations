@@ -128,6 +128,14 @@ MODEL_REGISTRY: dict[str, AgentModel] = {
              "shared vision lineage isn't actually exercised in that review. "
              "See docs/ARCHITECTURE.md 'Judge/Wireframe family overlap'.",
     ),
+    "qa": AgentModel(
+        model_id="deepseek.v3.2",
+        role="Agent 8 — Final QA scope-switch detector. Same model as Planner "
+             "(deliberately, not the cheap-and-mechanical tier): missing a real "
+             "scope switch here means it ships unnoticed, and a false positive "
+             "just costs a human a look at a flagged finding — asymmetric risk "
+             "that justifies the stronger model.",
+    ),
 }
 
 

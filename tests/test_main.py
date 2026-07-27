@@ -85,9 +85,15 @@ def test_empty_string_secret_is_treated_as_unconfigured(monkeypatch):
     assert resp.status_code == 200
 
 
-def test_orchestrator_run_rejects_final_qa_without_erroring():
-    # Deliberately deferred (docs §9.2) — must be a clean no-op, not a 500 from
-    # orchestrator.route()'s NotImplementedError.
+def test_orchestrator_run_routes_final_qa_to_agent_8(monkeypatch):
+    # Agent 8 (docs §9.2) — a real, narrow check, not the build graph and not
+    # a 500 from orchestrator.route()'s NotImplementedError. No plan on file
+    # for this project, so it's a clean "nothing to compare against" — the
+    # stub model is never even reached.
+    from tests.fakes import FakeSupabase
+
+    monkeypatch.setattr("app.db.client.get_supabase", lambda: FakeSupabase())
+
     resp = client.post(
         "/orchestrator/run",
         json={
@@ -96,4 +102,7 @@ def test_orchestrator_run_rejects_final_qa_without_erroring():
         },
     )
     assert resp.status_code == 200
-    assert resp.json() == {"status": "final_qa_unhandled"}
+    assert resp.json() == {
+        "status": "final_qa_checked", "has_scope_switch": False,
+        "reason": "no plan on file to compare against",
+    }
