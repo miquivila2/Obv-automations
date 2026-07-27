@@ -43,6 +43,20 @@ class Settings(BaseSettings):
     aws_region: str = "us-east-1"  # verify all 7 model ids below are actually enabled in this region
                                      # before relying on it — see docs/ARCHITECTURE.md "Open questions"
 
+    # --- Inbound webhook auth ---
+    # Shared secret required in the X-Webhook-Secret header on every trigger
+    # endpoint (see app/main.py). Set it to the same value in the Supabase
+    # Database Webhook's headers and in the calendar-timer scheduler's curl.
+    # None disables the check — acceptable ONLY for local dev; the app refuses
+    # to start without it when the host is reachable from anywhere else.
+    webhook_secret: str | None = None
+
+    # --- GitHub (Agent 7 update mode, §9.3) ---
+    # Read-only PAT (repo:read / public_repo scope is enough) for
+    # app/services/github_progress.py. Optional: unauthenticated requests work
+    # for public repos, just at a much lower rate limit.
+    github_token: str | None = None
+
     # --- Classification thresholds ---
     classification_confidence_threshold: float = 0.70  # below this, a meeting goes to pending_review
 
