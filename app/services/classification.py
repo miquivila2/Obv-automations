@@ -11,6 +11,12 @@ Two-stage resolution, cheapest-first:
      If exactly one project matches, the project is resolved: confidence 1.0,
      zero cost, zero non-determinism.
 
+     `project_matchers` starts empty and is grown by `apply_classification` /
+     `_learn_email_matchers` below: every time a meeting is confidently
+     classified (step 2), its attendee emails are learned as matchers for that
+     project (unless already claimed by any project), so the NEXT meeting with
+     the same attendees resolves in step 1 instead of paying for the LLM again.
+
   2. LLM FALLBACK — only if step 1 finds zero or more-than-one candidate, OR to
      decide the meeting *class* (which always needs the notes). GLM-4.7-Flash
      returns a structured classification.
@@ -179,9 +185,18 @@ async def _llm_classify(
     return await model.ainvoke([("system", system), ("human", title_and_notes)])
 
 
-async def apply_classification(intake_id: str, result: ClassificationResult) -> None:
+async def apply_classification(
+    intake_id: str, result: ClassificationResult, attendee_emails: list[str] | None = None
+) -> None:
     """Persist the classification onto the intake row, routing low-confidence
-    results to the human review queue instead of auto-assigning them."""
+    results to the human review queue instead of auto-assigning them.
+
+    When a project is confidently resolved, also *learns* new email matchers
+    (agent.project_matchers) from this meeting's attendees — so the next
+    meeting with the same attendees resolves deterministically (step 1, zero
+    LLM cost) instead of falling through to the LLM every time. This is the
+    only writer of that table; it starts empty and grows from confirmed
+    classifications."""
     from app.config import get_settings
     from app.db.client import get_supabase
 
@@ -204,3 +219,35 @@ async def apply_classification(intake_id: str, result: ClassificationResult) -> 
             "status": status,
         }
     ).eq("id", intake_id).execute()
+
+    if status == "classified" and result.project_id and attendee_emails:
+        _learn_email_matchers(supabase, result.project_id, attendee_emails)
+
+
+def _learn_email_matchers(supabase, project_id: str, attendee_emails: list[str]) -> None:
+    """Add a matcher for each attendee email not already claimed by ANY project
+    (including this one) — never reassign an email already known to belong to
+    a different project. Prevents a shared internal-team email (attends
+    multiple clients' meetings) from ever pointing at the wrong project."""
+    emails = {e.lower() for e in attendee_emails}
+    if not emails:
+        return
+
+    existing = (
+        supabase.schema("agent")
+        .table("project_matchers")
+        .select("project_id,value")
+        .eq("kind", "email")
+        .in_("value", list(emails))
+        .execute()
+        .data
+    )
+    already_known = {row["value"] for row in existing}
+
+    new_rows = [
+        {"project_id": project_id, "kind": "email", "value": email}
+        for email in emails
+        if email not in already_known
+    ]
+    if new_rows:
+        supabase.schema("agent").table("project_matchers").insert(new_rows).execute()

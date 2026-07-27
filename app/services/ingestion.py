@@ -71,6 +71,6 @@ async def ingest_meeting(
     # The meeting title isn't a separate field from Plaud; the classifier reads it
     # out of the transcript itself.
     result = await classify_meeting(attendee_emails=attendee_emails, title_and_notes=transcript)
-    await apply_classification(intake["id"], result)
+    await apply_classification(intake["id"], result, attendee_emails=attendee_emails)
 
     return {**intake, "classification": result.model_dump()}
