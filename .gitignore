@@ -17,6 +17,11 @@ venv/
 .idea/
 .vscode/
 
+# Transient agent worktrees (a full checkout of this repo, nested inside it).
+# Deliberately NOT ignoring all of .claude/ — project config such as
+# .claude/settings.json is meant to be committed.
+.claude/worktrees/
+
 # Confidential client examples (few-shot libraries). NEVER commit client budgets/
 # wireframes to this PUBLIC repo — they belong in Supabase Storage or here locally.
 examples/
