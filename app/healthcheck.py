@@ -48,8 +48,9 @@ import urllib.request
 _CRM_TABLES: dict[str, list[str]] = {
     # Read-only (classification, rates, budget .docx title).
     "projects": ["id", "name", "status", "hourly_rate", "preferred_currency", "currency"],
-    # Read-only (calendar timer).
-    "events": ["id", "end_at", "project_id", "attendee_ids"],
+    # Read-only (calendar timer). start_at is an ASSUMPTION (docs §9.7) —
+    # mirrors end_at's naming, unverified against the real schema.
+    "events": ["id", "start_at", "end_at", "project_id", "attendee_ids"],
     # Written by Agent 3 (app/services/plan_persist.py).
     "project_plan_drafts": [
         "id", "project_id", "status", "brief", "payload", "warnings", "pipeline_meta", "created_at",
@@ -248,6 +249,33 @@ def check_storage_bucket() -> bool:
         return False
 
 
+def check_plaud_mcp_cli() -> bool:
+    """Plaud transcript fetching (app/services/plaud_client.py) spawns
+    `npx -y @plaud-ai/mcp@latest` as a subprocess — this just confirms `npx`
+    (Node.js >= 20) is on PATH. It does NOT confirm the one-time interactive
+    OAuth login has been done (~/.plaud/tokens-mcp.json) — that can only be
+    discovered by an actual calendar-timer run, since this check is read-only
+    and must not spawn Plaud's server or touch a browser."""
+    import shutil
+    import subprocess
+
+    npx_path = shutil.which("npx")
+    if not npx_path:
+        _fail("`npx` not found on PATH - required to run Plaud's MCP server.")
+        _info("Install Node.js >= 20 (https://nodejs.org), which bundles npx.")
+        return False
+
+    try:
+        result = subprocess.run([npx_path, "--version"], capture_output=True, text=True, timeout=10)
+        _ok(f"npx available ({npx_path}, v{result.stdout.strip()})")
+        _info("One-time setup still required if not done yet: `npx -y @plaud-ai/mcp@latest install`")
+        _info("(opens a browser for Plaud login; caches a token this backend then reuses headlessly)")
+        return True
+    except Exception as e:  # noqa: BLE001
+        _fail(f"npx found but failed to run: {e}")
+        return False
+
+
 def _describe(value) -> str:
     """Describe a value's SHAPE without printing client data (see module docstring)."""
     if value is None:
@@ -324,10 +352,13 @@ def main() -> int:
     print("\nStorage")
     storage_ok = check_storage_bucket()
 
+    print("\nPlaud (transcript fetching)")
+    plaud_ok = check_plaud_mcp_cli()
+
     print("\nDocumented assumptions (evidence only - never fails the run)")
     report_assumptions()
 
-    results = [provider_ok, schema_ok, tables_ok, crm_ok, storage_ok]
+    results = [provider_ok, schema_ok, tables_ok, crm_ok, storage_ok, plaud_ok]
     print()
     if all(results):
         print("All checks passed - the agent layer and the CRM agree on the schema.")

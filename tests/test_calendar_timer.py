@@ -66,20 +66,48 @@ def fake(monkeypatch):
     return fake_client
 
 
-async def test_process_due_event_still_fails_at_the_plaud_boundary(fake):
-    # The one remaining blocker (docs §9.7): transcript fetching. Attendee
-    # resolution must NOT be what raises anymore.
-    with pytest.raises(NotImplementedError, match="fetch_transcript"):
-        await process_due_event({"id": "e1", "attendee_ids": ["a@b.com"]})
+def _due_event(id_="e1", attendee_ids=None):
+    return {
+        "id": id_,
+        "start_at": "2026-07-24T13:00:00+00:00",
+        "end_at": "2026-07-24T14:00:00+00:00",
+        "attendee_ids": attendee_ids or ["a@b.com"],
+    }
 
 
-async def test_process_due_event_ingests_once_transcript_fetching_is_available(fake, monkeypatch):
-    # Simulates Plaud access landing — process_due_event should need no changes.
+@pytest.fixture
+def fake_plaud(monkeypatch):
+    """process_due_event now resolves a recording (find_recording_id) before
+    fetching its transcript (docs §9.7, revised: Plaud's own MCP server, not
+    the Developer Platform). Both are stubbed here at the module-attribute
+    level, same pattern as every other lazy-imported dependency in this repo —
+    real MCP wiring is covered separately in test_plaud_client.py."""
+
+    async def _fake_find_recording_id(*, event_id, start_at, end_at):
+        return "rec-1"
+
     async def _fake_fetch_transcript(*, event_id, plaud_note_id):
+        assert plaud_note_id == "rec-1"
         return "the real transcript"
 
+    monkeypatch.setattr("app.services.plaud_client.find_recording_id", _fake_find_recording_id)
     monkeypatch.setattr("app.services.plaud_client.fetch_transcript", _fake_fetch_transcript)
 
-    result = await process_due_event({"id": "e1", "attendee_ids": ["a@b.com"]})
+
+async def test_process_due_event_ingests_using_the_resolved_recording(fake, fake_plaud):
+    result = await process_due_event(_due_event())
     assert result["event_id"] == "e1"
     assert result["transcript"] == "the real transcript"
+    assert result["plaud_note_id"] == "rec-1"
+
+
+async def test_process_due_event_propagates_an_ambiguous_match(fake, monkeypatch):
+    # find_recording_id refuses to guess (see plaud_client.py) — that failure
+    # must surface, not be swallowed here.
+    async def _fake_find_recording_id(*, event_id, start_at, end_at):
+        raise ValueError(f"2 Plaud recordings overlap event {event_id!r}'s window")
+
+    monkeypatch.setattr("app.services.plaud_client.find_recording_id", _fake_find_recording_id)
+
+    with pytest.raises(ValueError, match="ambiguous|overlap"):
+        await process_due_event(_due_event())

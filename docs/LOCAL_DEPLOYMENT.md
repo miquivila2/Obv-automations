@@ -123,10 +123,47 @@ Windows: a Task Scheduler task running that `curl` on a 5-minute trigger.
 
 If `WEBHOOK_SECRET` is set, add `-H "X-Webhook-Secret: <value>"` to that curl.
 
-Today this will report due events as **failed** with a clear reason — transcript
-fetching is still blocked on Plaud Developer Platform access (see
-`app/services/plaud_client.py`). Attendee-email resolution IS wired, under a
-documented assumption about `public.events.attendee_ids` (docs §9.10).
+This tick fetches real transcripts from Plaud (see the next section for the
+one-time setup) and resolves attendee emails under a documented assumption
+about `public.events.attendee_ids` (docs §9.10) — nothing here needs Plaud
+Developer Platform access anymore.
+
+---
+
+## One-time Plaud login (required before the timer can fetch transcripts)
+
+`app/services/plaud_client.py` talks to **Plaud's own MCP server**
+(`@plaud-ai/mcp`), not the Developer Platform API — no approval process, just
+your own Plaud account. Its auth is a **browser OAuth login you do yourself,
+once, on the machine that will run this backend.** This repo never sees your
+Plaud password or token; there is nothing to type into a `.env` file.
+
+**Prerequisite:** Node.js >= 20 (bundles `npx`). `python -m app.healthcheck`
+checks this for you (see "Plaud (transcript fetching)" in its output).
+
+**Do this once, on the machine that will run the calendar timer:**
+
+```bash
+npx -y @plaud-ai/mcp@latest install
+```
+
+This opens your browser, you sign in to Plaud, and a token is cached at
+`~/.plaud/tokens-mcp.json`. Every later `POST /internal/calendar-timer/tick`
+spawns the same MCP server as a subprocess and — per the working assumption
+in docs §9 item 7 — reuses that cached token without opening a browser again.
+
+**Why "the machine that runs this backend" matters:** the token lives on disk,
+tied to whatever machine you ran `install` on. If the backend later moves to
+a different host (docs §3.5, hosting is still undecided), that login has to
+be redone there. Today, for local development, that machine is just this one.
+
+**How a calendar event finds its Plaud recording:** Plaud has no idea what a
+`public.events` row is, and vice versa — there's no shared id. `plaud_client.
+find_recording_id` matches them by comparing the event's time window against
+Plaud's recording list; if that's ambiguous (zero or several recordings
+overlap), it raises rather than guessing, and that event shows up in the
+tick's `failed` list with a clear reason instead of silently attaching the
+wrong transcript.
 
 ---
 

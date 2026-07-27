@@ -26,9 +26,12 @@ meeting TRANSCRIPT and the attendee EMAILS.
     _resolve_attendee_emails). If that assumption turns out wrong, swap that
     one function for a public.team_members(id -> email) lookup; nothing else
     downstream (classification, the build graph) needs to change.
-  * Transcript: still genuinely blocked on Plaud Developer Platform access
-    (PLAUD_CLIENT_ID/PLAUD_API_KEY) — see app/services/plaud_client.py, the
-    one remaining NotImplementedError in this path.
+  * Transcript: no longer blocked on Developer Platform approval (docs §9.7,
+    revised this session) — app/services/plaud_client.py talks to Plaud's own
+    MCP server instead. This module still has to resolve WHICH Plaud
+    recording corresponds to this event (plaud_client.find_recording_id, by
+    time-window overlap) before it can fetch the transcript, since a calendar
+    event carries no Plaud recording id of its own.
 """
 from __future__ import annotations
 
@@ -76,7 +79,7 @@ def find_due_events(
 
     candidates = (
         supabase.table("events")
-        .select("id,end_at,project_id,attendee_ids")
+        .select("id,start_at,end_at,project_id,attendee_ids")
         .gte("end_at", window_start)
         .lte("end_at", now.isoformat())
         .execute()
@@ -106,29 +109,44 @@ def _resolve_attendee_emails(event: dict) -> list[str]:
     return [str(a) for a in (event.get("attendee_ids") or [])]
 
 
+def _parse_datetime(value) -> datetime:
+    if isinstance(value, str):
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return value
+
+
 async def process_due_event(event: dict) -> dict:
     """Resolve transcript + attendees for one due event and run Agent 1.
 
     Attendee emails are resolved now (see _resolve_attendee_emails and its
-    documented assumption). The transcript fetch is still genuinely blocked on
-    Plaud Developer Platform access — see app/services/plaud_client.py, which
-    raises NotImplementedError until that access lands. `language` also has no
-    real source for this automatic path yet (unlike the manual webhook, which
-    takes it as an input); defaults to 'es' like the artifact-changed
-    re-trigger does (app/main.py) until a per-project language source exists.
+    documented assumption). The transcript comes from Plaud's MCP server
+    (app/services/plaud_client.py) — first find_recording_id matches this
+    event to exactly one Plaud recording by time-window overlap (ASSUMPTION:
+    `public.events` has a `start_at` column, mirroring the already-used
+    `end_at`), then fetch_transcript pulls its text.
+
+    `language` has no real source for this automatic path yet (unlike the
+    manual webhook, which takes it as an input); defaults to 'es' like the
+    artifact-changed re-trigger does (app/main.py) until a per-project
+    language source exists.
     """
     from app.services.ingestion import ingest_meeting
-    from app.services.plaud_client import fetch_transcript
+    from app.services.plaud_client import fetch_transcript, find_recording_id
 
     attendee_emails = _resolve_attendee_emails(event)
-    transcript = await fetch_transcript(event_id=event["id"], plaud_note_id=None)
+    plaud_note_id = await find_recording_id(
+        event_id=event["id"],
+        start_at=_parse_datetime(event["start_at"]),
+        end_at=_parse_datetime(event["end_at"]),
+    )
+    transcript = await fetch_transcript(event_id=event["id"], plaud_note_id=plaud_note_id)
 
     return await ingest_meeting(
         event_id=event["id"],
         attendee_emails=attendee_emails,
         language="es",
         transcript_text=transcript,
-        plaud_note_id=None,
+        plaud_note_id=plaud_note_id,
     )
 
 

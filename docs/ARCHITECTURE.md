@@ -66,10 +66,13 @@ This is the heart of the system. Follow the data end to end:
 1. **Google Calendar** — a meeting event. From it: end time (fires the 30-min
    timer), attendee list (emails → used for deterministic project matching), and
    implicit language.
-2. **Plaud** — the meeting transcript. **It's a manual export today** ("Developer
-   Platform JSON later", per the original doc). There is no Plaud API integration
-   yet: `ingestion.export_plaud_note` is a stub that receives the already-exported
-   transcript. Once the API exists, only that stub changes — nothing downstream.
+2. **Plaud** — the meeting transcript. Two paths, both real (§9 item 7):
+   - **Automatic** (calendar timer): `app/services/plaud_client.py` fetches it
+     from Plaud's own MCP server (`@plaud-ai/mcp`), no manual step.
+   - **Manual** (direct webhook call): `ingestion.export_plaud_note` still
+     just echoes an already-obtained transcript handed in directly — for
+     callers that already have one. Both paths converge on the same
+     `ingest_meeting` call; nothing downstream cares which one supplied it.
 
 ### 3.2. Transformation (Agent 1)
 The raw transcript + calendar metadata become a **classified meeting record**:
@@ -367,10 +370,40 @@ and no 24/7 worker watching the table. Chosen over a dedicated queue
    mitigate operationally (don't edit wireframes of projects with a budget already
    sent without knowing). See `circuit breaker` as a future improvement: a per-project
    flag to pause automation.
-7. **Plaud integration** — blocked on Developer Platform access (`dev.plaud.ai`
-   "Contact Us" → approval → `PLAUD_CLIENT_ID`/`PLAUD_API_KEY` via `portal.plaud.ai`).
-   Until then, `export_plaud_note` stays a stub (manually-pasted transcript) and
-   the calendar timer (§ below) reports due events as failed for this reason.
+7. ~~**Plaud integration** — blocked on Developer Platform access~~ **DECIDED
+   & IMPLEMENTED (Session 6): use Plaud's own MCP server instead.** Plaud ships
+   `@plaud-ai/mcp` (docs.plaud.ai/plaud-mcp-cli/mcp) — installable by any Plaud
+   user, no `dev.plaud.ai` "Contact Us" approval needed. `app/services/
+   plaud_client.py` runs it as a local subprocess (`npx -y @plaud-ai/mcp@latest`,
+   stdio transport) and calls its tools directly via the official `mcp` Python
+   client SDK — no LLM in that loop, a plain tool call.
+
+   Two things this unblocked but did not eliminate:
+   - **ASSUMPTION TO VERIFY: OAuth token reuse.** The server's auth is an
+     interactive browser OAuth flow, caching a token at
+     `~/.plaud/tokens-mcp.json`. We assume one interactive login, done once by
+     hand (`npx -y @plaud-ai/mcp@latest install`) on the machine that runs
+     this backend, leaves a token every later *non-interactive* subprocess call
+     can reuse. Plaud's docs don't confirm or deny this. If wrong, the symptom
+     is `fetch_transcript` hanging waiting for a browser that never opens in a
+     headless deployment — bounded by a timeout so that fails loud, not silent
+     (`_CALL_TIMEOUT_SECONDS`).
+   - **The matching problem (new — not anticipated by the original spec).** A
+     Plaud recording carries no reference to a CRM `public.events` row; nothing
+     links "this calendar event" to "this Plaud recording". `find_recording_id`
+     resolves it by TIME WINDOW OVERLAP against `list_files`' date filters —
+     the only correlation Plaud's tool surface exposes — using the same rule as
+     classification's deterministic project match (§4.1): exactly one
+     candidate → use it; zero or more than one → raise, never guess. This also
+     means `public.events` needs a `start_at` column (mirroring the
+     already-used `end_at`) — itself an unverified ASSUMPTION, tracked
+     alongside `attendee_ids` in item 10 below.
+
+   `export_plaud_note` (Agent 1's manual-webhook path, `app/services/
+   ingestion.py`) is unaffected — it still takes an already-obtained transcript
+   directly, for callers that already have one (e.g. pasted by hand). Plaud's
+   MCP path is specifically for the *automatic* calendar-timer trigger, which
+   starts with no transcript at all.
 8. **`project_plan_drafts.status` vocabulary** — the CRM table has no documented
    enum; we write `'draft'` as an assumption (see `app/services/plan_persist.py`).
    Verify against real CRM data / the Lovable app's own status values before
@@ -383,16 +416,23 @@ and no 24/7 worker watching the table. Chosen over a dedicated queue
    `agent.gantt_task_ownership`, since `gantt_tasks` has no source column) instead
    of leaving duplicate rows behind — see §5 and `0002_gantt_task_ownership.sql`.
    A human-created/edited row (no ownership record) is never touched.
-10. **Calendar timer → Agent 1 handoff** — `process_due_event` is now wired end
-    to end except for the transcript. Attendee resolution proceeds under a
-    documented ASSUMPTION: `public.events.attendee_ids` holds email strings
-    (`calendar_timer._resolve_attendee_emails`). **Verify against production
-    data** — if they're `team_members` uuids instead, that one function becomes
-    an id→email lookup and nothing else changes. `language` likewise has no
-    per-project source on this automatic path yet and defaults to `'es'`. The
-    only hard blocker left is the transcript: `app/services/plaud_client.py`
-    `fetch_transcript` raises `NotImplementedError` until Plaud access lands
-    (item 7).
+10. ~~**Calendar timer → Agent 1 handoff**~~ **DECIDED & IMPLEMENTED (Session
+    6): fully wired end to end**, under three documented ASSUMPTIONS, none of
+    them blockers, all **verify against production data**:
+    - `public.events.attendee_ids` holds email strings
+      (`calendar_timer._resolve_attendee_emails`). If they're `team_members`
+      uuids instead, that one function becomes an id→email lookup and nothing
+      else changes.
+    - `public.events` has a `start_at` column mirroring the already-used
+      `end_at` — needed to window-match the event against Plaud recordings
+      (item 7, `find_recording_id`).
+    - `language` has no per-project source on this automatic path yet and
+      defaults to `'es'` (same fallback the artifact-changed re-trigger uses,
+      `app/main.py`).
+
+    All three are checked by `python -m app.healthcheck`, which reports the
+    observed shape of `attendee_ids` and will fail loudly on a missing
+    `start_at` column.
 11. **Audit findings (post-Session 5 review against the original spec doc)** —
     tracked status of the four gaps found:
     - ~~**Gap #1: source-tracking for regeneration**~~ **DECIDED & FIXED** —
