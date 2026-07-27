@@ -233,6 +233,35 @@ def test_report_assumptions_survives_an_empty_database(monkeypatch, capsys):
     assert "cannot confirm" in out.lower()
 
 
+# ---------------------------------------------------------------------------
+# budget_line_items.source — the only assumption whose blast radius is DELETE
+# ---------------------------------------------------------------------------
+def test_preexisting_agent_rows_are_flagged_as_deletable(monkeypatch, capsys):
+    fake = _install(monkeypatch, SchemaAwareFake(columns=_full_crm_schema()))
+    fake.rows[("public", "budget_line_items")] = [
+        {"source": "agent"}, {"source": "agent"}, {"source": "human"},
+    ]
+
+    report_assumptions()
+
+    out = capsys.readouterr().out
+    # persist_budget DELETEs rows matching source='agent'. If the CRM already
+    # has some this system didn't write, that's data loss waiting to happen.
+    assert "2 row(s) already have source='agent'" in out
+    assert "WILL delete them" in out
+
+
+def test_no_agent_rows_means_no_delete_warning(monkeypatch, capsys):
+    fake = _install(monkeypatch, SchemaAwareFake(columns=_full_crm_schema()))
+    fake.rows[("public", "budget_line_items")] = [{"source": "human"}]
+
+    report_assumptions()
+
+    out = capsys.readouterr().out
+    assert "human" in out
+    assert "WILL delete them" not in out
+
+
 @pytest.mark.parametrize("check", [check_agent_schema_exposed, check_storage_bucket])
 def test_checks_never_raise_on_a_dead_connection(monkeypatch, check):
     class _Dead:

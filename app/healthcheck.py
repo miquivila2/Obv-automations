@@ -26,8 +26,10 @@ So this checks the contract itself, read-only:
      naming them all is a read-only way to verify the write contract without
      inserting a single row.
   7. The `budgets` Storage bucket exists (Agent 5 uploads the .docx there).
-  8. Reports the real shape of the two documented ASSUMPTIONS (docs §9.8,
-     §9.10) so they can be confirmed or corrected from evidence.
+  8. Reports the real shape of the three documented ASSUMPTIONS (docs §9.8,
+     §9.10, §9.11) so they can be confirmed or corrected from evidence — including
+     the only one that could cost data: budget_line_items.source, which scopes
+     our DELETE on a CRM table.
 
 NOTHING HERE WRITES. It is safe to point at production.
 
@@ -328,6 +330,30 @@ def report_assumptions() -> None:
                 _warn("  -> 'draft' is NOT among them. Confirm before writing to production.")
     except Exception as e:  # noqa: BLE001
         _warn(f"could not sample project_plan_drafts.status: {e}")
+
+    # §9.11 gap #1 - budget_line_items.source. THE ONE ASSUMPTION WITH DELETE
+    # BLAST RADIUS: persist_budget scopes its UPDATE/DELETE with
+    # .eq("source", "agent"), so the entire "we never touch human data"
+    # guarantee rests on that column meaning what we think it means. A
+    # pre-existing 'agent' row we did NOT create would be deleted on the next
+    # budget regeneration.
+    try:
+        rows = supabase.table("budget_line_items").select("source").limit(200).execute().data
+        values = sorted({r.get("source") for r in rows if r.get("source") is not None})
+        agent_rows = sum(1 for r in rows if r.get("source") == "agent")
+        if not rows:
+            _info("budget_line_items: no rows yet - nothing our regeneration could delete.")
+        else:
+            _info(f"budget_line_items.source values in use: {', '.join(map(str, values))}")
+            _info("  -> we write 'agent', and DELETE rows matching it on regeneration")
+            _info("     (app/services/budget_persist.py). Human rows must never carry it.")
+            if agent_rows:
+                _warn(
+                    f"  -> {agent_rows} row(s) already have source='agent'. If this system "
+                    "did not create them, budget regeneration WILL delete them."
+                )
+    except Exception as e:  # noqa: BLE001
+        _warn(f"could not sample budget_line_items.source: {e}")
 
 
 def main() -> int:

@@ -491,6 +491,18 @@ and no 24/7 worker watching the table. Chosen over a dedicated queue
       see item 9. `agent.gantt_task_ownership` (Gantt) + `source='agent'`
       (Budget, already existed) let regeneration UPDATE/DELETE only the agent's
       own rows, never a human's.
+
+      **⚠️ ASSUMPTION TO VERIFY, and the only one on this list with DELETE blast
+      radius:** the Gantt half is safe by construction — ownership is tracked in
+      OUR table, so no CRM column has to mean anything. The Budget half is not:
+      `persist_budget` scopes its UPDATE/DELETE with `.eq("source", "agent")` on
+      a CRM column we did not define, so the whole "never a human's" guarantee
+      rests on `public.budget_line_items.source` meaning what we assume. If the
+      CRM already writes `'agent'` there for its own purposes, budget
+      regeneration deletes rows it never created. `python -m app.healthcheck`
+      now reports the `source` values in use and warns with a count when
+      pre-existing `'agent'` rows are found — check it before letting Agent 5
+      write to production.
     - ~~**Gap #2: Budget had no follow-up mode**~~ **FIXED** — `budget.py` now
       loads current agent-authored lines and revises via the same upsert.
     - ~~**Gap #3: Gantt tasks have no description field**~~ **FIXED** —
