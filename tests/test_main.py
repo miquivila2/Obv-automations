@@ -73,6 +73,18 @@ def test_health_needs_no_secret(secret):
     assert client.get("/health").status_code == 200
 
 
+def test_empty_string_secret_is_treated_as_unconfigured(monkeypatch):
+    # Regression: a real .env with `WEBHOOK_SECRET=` (present, empty — exactly
+    # what .env.example ships) parses to "", not None. require_webhook_secret
+    # must treat that the same as unset, or every local-dev deployment that
+    # copied .env.example verbatim 401s on its own webhooks.
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "webhook_secret", "")
+    resp = client.post("/webhooks/artifact-changed", json=_ARTIFACT_CHANGED_BODY)
+    assert resp.status_code == 200
+
+
 def test_orchestrator_run_rejects_final_qa_without_erroring():
     # Deliberately deferred (docs §9.2) — must be a clean no-op, not a 500 from
     # orchestrator.route()'s NotImplementedError.

@@ -50,11 +50,16 @@ from app.services.ingestion import ingest_meeting
 
 def require_webhook_secret(x_webhook_secret: str | None = Header(None)) -> None:
     """Shared-secret gate for every trigger endpoint. When no secret is
-    configured the app is in local dev — allow, but that's the only case."""
+    configured the app is in local dev — allow, but that's the only case.
+
+    `expected` must be checked for falsy, not `is None`: a `.env` file with
+    `WEBHOOK_SECRET=` (present, empty — exactly what .env.example ships)
+    parses to `""`, not `None`. Treating only `None` as "unconfigured" would
+    make that documented, intentional local-dev setup 401 on every request."""
     import secrets
 
     expected = get_settings().webhook_secret
-    if expected is None:
+    if not expected:
         return
     if x_webhook_secret is None or not secrets.compare_digest(x_webhook_secret, expected):
         raise HTTPException(status_code=401, detail="invalid or missing X-Webhook-Secret")
