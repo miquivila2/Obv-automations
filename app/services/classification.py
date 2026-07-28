@@ -72,10 +72,15 @@ class ClassificationResult(BaseModel):
         auto-assigning a project it never actually reasoned about.
 
         Given the real messages (see app/services/stub_models.py), it derives the
-        meeting CLASS from keywords instead. That's what lets the mock harness
-        (app/mock/) exercise all four routes end to end without a live model —
-        the project itself is still resolved deterministically upstream, never
-        guessed here."""
+        meeting CLASS from keywords, and a CONFIDENCE that's high for any clear
+        signal (an explicit class keyword, or just a long/substantive transcript)
+        and 0.0 only for a genuinely short, ambiguous one. That's what lets the
+        mock harness (app/mock/) exercise all four routes end to end without a
+        live model — including a brand-new client's onboarding meeting, which
+        has no existing project to deterministically match and would otherwise
+        never clear the review-queue threshold no matter how clear the notes
+        are. The project itself is still resolved deterministically upstream,
+        never guessed here."""
         if not messages:
             return cls(
                 project_id=None,
@@ -91,13 +96,13 @@ class ClassificationResult(BaseModel):
         # every keyword at once and classify everything identically.
         text = " ".join(_human_message_text(m) for m in messages).lower()
 
-        meeting_class, sub_type = "onboarding", None
+        meeting_class, sub_type, class_signal = "onboarding", None, False
         if any(k in text for k in ("acceptance", "final qa", "sign off", "signs off", "aceptación")):
-            meeting_class = "final_qa"
+            meeting_class, class_signal = "final_qa", True
         elif any(k in text for k in ("progress", "sprint", "avance", "blocked", "so far")):
-            meeting_class = "update"
+            meeting_class, class_signal = "update", True
         elif any(k in text for k in ("follow-up", "follow up", "seguimiento", "revisión", "revisar", "adjust")):
-            meeting_class = "follow_up"
+            meeting_class, class_signal = "follow_up", True
             for keyword, artifact in (
                 ("presupuesto", "budget"), ("budget", "budget"),
                 ("gantt", "gantt"), ("cronograma", "gantt"),
@@ -108,13 +113,32 @@ class ClassificationResult(BaseModel):
                     break
             sub_type = sub_type or "plan"
 
+        # CONFIDENCE. Two genuinely different situations were being conflated
+        # under a single hardcoded 0.0 (found via the mock harness: a full,
+        # substantive onboarding transcript for a brand-new client — no
+        # existing project to deterministically match against — could NEVER
+        # clear the review-queue threshold, which blocks exactly the most
+        # important path this whole system automates).
+        #   - An explicit class keyword hit (final_qa/update/follow_up), OR a
+        #     long, substantive transcript defaulting to onboarding: a real
+        #     model would be confident here even with project_id=null (the
+        #     prompt explicitly allows that — "if nothing matches, set
+        #     project_id to null ... suggested_name instead"). confidence
+        #     reflects certainty about the CLASSIFICATION, not whether a CRM
+        #     row already exists.
+        #   - A short, generic transcript with no distinguishing signal (the
+        #     "unknown prospect, nothing decided yet" edge case) stays 0.0 —
+        #     genuinely ambiguous, correctly belongs in the review queue.
+        confident = class_signal or len(text) >= 300
+        confidence = 0.85 if confident else 0.0
+
         return cls(
             project_id=None,  # resolved deterministically by classify_meeting, not here
             new_project_suggested_name=None,
             meeting_class=meeting_class,
             sub_type=sub_type,
-            confidence=0.0,  # only the deterministic match may raise this
-            reasoning=f"[stub] keyword-derived class={meeting_class} sub_type={sub_type}",
+            confidence=confidence,
+            reasoning=f"[stub] keyword-derived class={meeting_class} sub_type={sub_type} confident={confident}",
         )
 
 

@@ -50,3 +50,30 @@ def test_stub_classification_goes_to_review():
     # The stub output must be low-confidence so stubbed runs never auto-assign.
     result = ClassificationResult.stub()
     assert result.confidence == 0.0 and result.project_id is None
+
+
+def test_stub_with_a_substantive_transcript_is_confident_even_with_no_project_match():
+    # Found via the mock harness: a brand-new client's onboarding meeting has
+    # no existing project to deterministically match, and previously got
+    # stuck at confidence=0.0 no matter how clear and detailed the notes
+    # were — blocking the single most important path the system automates.
+    # A long, substantive transcript must clear the review-queue threshold.
+    notes = "We need a new system. " * 30  # >= 300 chars, no other class keyword
+    result = ClassificationResult.stub(messages=[("system", "..."), ("human", notes)])
+    assert result.meeting_class == "onboarding"
+    assert result.confidence >= 0.70
+
+
+def test_stub_with_a_short_ambiguous_transcript_stays_low_confidence():
+    # The genuine edge case (nothing decided yet) must still route to review.
+    notes = "Not sure yet, maybe some kind of tool."
+    result = ClassificationResult.stub(messages=[("system", "..."), ("human", notes)])
+    assert result.confidence == 0.0
+
+
+def test_stub_with_an_explicit_class_keyword_is_confident_regardless_of_length():
+    notes = "quick follow-up on the budget"
+    result = ClassificationResult.stub(messages=[("system", "..."), ("human", notes)])
+    assert result.meeting_class == "follow_up"
+    assert result.sub_type == "budget"
+    assert result.confidence >= 0.70
