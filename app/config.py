@@ -19,10 +19,21 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
+    # --- Data source ---
+    # "supabase" -> the real database (production CRM + our agent schema).
+    # "mock"     -> a local JSON file, driven by the test UI in app/mock/.
+    #               Lets the whole pipeline be stress-tested without touching
+    #               the live CRM. The swap happens inside app/db/client.py, so
+    #               no agent or persistence service knows which one it got.
+    data_source: Literal["supabase", "mock"] = "supabase"
+    mock_data_path: str = "mock_data/crm.json"
+
     # --- Supabase ---
-    supabase_url: str
-    supabase_service_role_key: str
-    supabase_db_uri: str  # direct Postgres connection string, used only by the LangGraph checkpointer
+    # Required only when data_source == "supabase"; the mock path never reads
+    # them, so a mock-mode run works with these left at their defaults.
+    supabase_url: str = ""
+    supabase_service_role_key: str = ""
+    supabase_db_uri: str = ""  # direct Postgres connection string, used only by the LangGraph checkpointer
 
     # --- Model provider ---
     # "stub"    -> no deps; chat_model_for returns canned outputs for fast unit tests.
@@ -59,6 +70,14 @@ class Settings(BaseSettings):
 
     # --- Classification thresholds ---
     classification_confidence_threshold: float = 0.70  # below this, a meeting goes to pending_review
+
+    # Comma-separated email domains that belong to US, not to a client. Attendees
+    # at these domains are never learned as project matchers: our own people
+    # attend every client's meetings, so their addresses carry no signal about
+    # which project a meeting belongs to — and learning one silently breaks
+    # deterministic matching for every project afterwards (see
+    # classification._learn_email_matchers).
+    internal_email_domains: str = "oblivionlabs.com,eada.net"
 
     # --- Judge loop ---
     judge_max_rounds: int = 2

@@ -28,20 +28,32 @@ class _StubStructured:
         self._agent = agent
         self._schema = schema
 
-    def _make(self) -> Any:
+    def _make(self, messages: Any = None) -> Any:
         stub_factory = getattr(self._schema, "stub", None)
         if stub_factory is None:
             raise NotImplementedError(
                 f"Stub mode: {self._schema.__name__} needs a `stub()` classmethod returning a "
                 f"canned instance (agent={self._agent!r}). Add one, or set MODEL_PROVIDER=bedrock."
             )
-        return stub_factory()
+        # Opt-in context: a schema whose stub() accepts `messages` gets the real
+        # prompt, so it can produce output that varies with the input instead of
+        # one fixed constant. Used by ClassificationResult so the mock harness
+        # (app/mock/) can exercise all four routing branches without a live
+        # model. Schemas that don't want it keep a zero-argument stub().
+        import inspect
 
-    async def ainvoke(self, _messages: Any) -> Any:
-        return self._make()
+        try:
+            takes_messages = "messages" in inspect.signature(stub_factory).parameters
+        except (TypeError, ValueError):  # builtins / C-implemented callables
+            takes_messages = False
 
-    def invoke(self, _messages: Any) -> Any:
-        return self._make()
+        return stub_factory(messages=messages) if takes_messages else stub_factory()
+
+    async def ainvoke(self, messages: Any = None) -> Any:
+        return self._make(messages)
+
+    def invoke(self, messages: Any = None) -> Any:
+        return self._make(messages)
 
 
 class StubChatModel:

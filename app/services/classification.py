@@ -59,19 +59,82 @@ class ClassificationResult(BaseModel):
     )
     confidence: float = Field(..., ge=0.0, le=1.0)
     reasoning: str = Field(..., description="One-sentence justification, for the review queue UI.")
+    # Not model-generated: set by classify_meeting to record HOW the project was
+    # resolved, for agent.meeting_intake.classification_method.
+    method: str = Field("llm", exclude=True)
 
     @classmethod
-    def stub(cls) -> "ClassificationResult":
-        """Canned output for MODEL_PROVIDER=stub: deliberately low confidence so a
-        stubbed run lands in the review queue instead of silently auto-assigning."""
+    def stub(cls, messages: list | None = None) -> "ClassificationResult":
+        """Canned output for MODEL_PROVIDER=stub.
+
+        With no context (a plain unit test) it stays deliberately low-confidence,
+        so a stubbed run lands in the review queue instead of silently
+        auto-assigning a project it never actually reasoned about.
+
+        Given the real messages (see app/services/stub_models.py), it derives the
+        meeting CLASS from keywords instead. That's what lets the mock harness
+        (app/mock/) exercise all four routes end to end without a live model —
+        the project itself is still resolved deterministically upstream, never
+        guessed here."""
+        if not messages:
+            return cls(
+                project_id=None,
+                new_project_suggested_name=None,
+                meeting_class="onboarding",
+                sub_type=None,
+                confidence=0.0,
+                reasoning="[stub] no real model — routed to review queue.",
+            )
+
+        # ONLY the human message. The system prompt names all four classes
+        # ("...or 'final_qa' (acceptance stage)"), so scanning it would match
+        # every keyword at once and classify everything identically.
+        text = " ".join(_human_message_text(m) for m in messages).lower()
+
+        meeting_class, sub_type = "onboarding", None
+        if any(k in text for k in ("acceptance", "final qa", "sign off", "signs off", "aceptación")):
+            meeting_class = "final_qa"
+        elif any(k in text for k in ("progress", "sprint", "avance", "blocked", "so far")):
+            meeting_class = "update"
+        elif any(k in text for k in ("follow-up", "follow up", "seguimiento", "revisión", "revisar", "adjust")):
+            meeting_class = "follow_up"
+            for keyword, artifact in (
+                ("presupuesto", "budget"), ("budget", "budget"),
+                ("gantt", "gantt"), ("cronograma", "gantt"),
+                ("wireframe", "wireframe"), ("plan", "plan"),
+            ):
+                if keyword in text:
+                    sub_type = artifact
+                    break
+            sub_type = sub_type or "plan"
+
         return cls(
-            project_id=None,
+            project_id=None,  # resolved deterministically by classify_meeting, not here
             new_project_suggested_name=None,
-            meeting_class="onboarding",
-            sub_type=None,
-            confidence=0.0,
-            reasoning="[stub] no real model — routed to review queue.",
+            meeting_class=meeting_class,
+            sub_type=sub_type,
+            confidence=0.0,  # only the deterministic match may raise this
+            reasoning=f"[stub] keyword-derived class={meeting_class} sub_type={sub_type}",
         )
+
+
+def _internal_domains() -> set[str]:
+    """Email domains belonging to us, not to a client. Configurable because it
+    differs per deployment (see Settings.internal_email_domains)."""
+    from app.config import get_settings
+
+    raw = get_settings().internal_email_domains or ""
+    return {d.strip().lower().lstrip("@") for d in raw.split(",") if d.strip()}
+
+
+def _human_message_text(message) -> str:
+    """Content of a human/user message, empty string for anything else.
+    Messages arrive as ("human", content) tuples or as LangChain objects."""
+    if isinstance(message, (tuple, list)) and len(message) == 2:
+        role, content = message
+        return str(content) if str(role).lower() in ("human", "user") else ""
+    role = getattr(message, "type", getattr(message, "role", ""))
+    return str(getattr(message, "content", "")) if str(role).lower() in ("human", "user") else ""
 
 
 def _deterministic_match(
@@ -150,7 +213,26 @@ async def classify_meeting(*, attendee_emails: list[str], title_and_notes: str) 
     # so we always run the classifier — passing the pre-resolved project when we have
     # exactly one, so the model only decides class/sub_type.
     forced = candidates[0] if len(candidates) == 1 else None
-    return await _llm_classify(title_and_notes, active_projects, forced_project=forced)
+    result = await _llm_classify(title_and_notes, active_projects, forced_project=forced)
+
+    if forced is None:
+        return result
+
+    # THE DETERMINISTIC MATCH WINS on *which project* (docs §4.1: "exactly one
+    # project matches -> done, confidence 1.0"). Previously this was only a hint
+    # in the prompt, which left the model free to contradict an exact
+    # email/alias hit and attach the meeting to the wrong project — the one
+    # outcome §4.1 is explicitly written to prevent. The model is still the sole
+    # decider of meeting_class/sub_type, which is all it was ever needed for.
+    return result.model_copy(
+        update={
+            "project_id": forced["id"],
+            "new_project_suggested_name": None,
+            "confidence": 1.0,
+            "method": "deterministic",
+            "reasoning": f"Project matched deterministically ({forced['name']}). {result.reasoning}",
+        }
+    )
 
 
 async def _llm_classify(
@@ -215,7 +297,7 @@ async def apply_classification(
             "class": result.meeting_class,
             "sub_type": result.sub_type,
             "classification_confidence": result.confidence,
-            "classification_method": "llm",
+            "classification_method": result.method,
             "status": status,
         }
     ).eq("id", intake_id).execute()
@@ -227,9 +309,21 @@ async def apply_classification(
 def _learn_email_matchers(supabase, project_id: str, attendee_emails: list[str]) -> None:
     """Add a matcher for each attendee email not already claimed by ANY project
     (including this one) — never reassign an email already known to belong to
-    a different project. Prevents a shared internal-team email (attends
-    multiple clients' meetings) from ever pointing at the wrong project."""
-    emails = {e.lower() for e in attendee_emails}
+    a different project.
+
+    OUR OWN PEOPLE ARE EXCLUDED (internal_email_domains). Found by the mock
+    harness: without this, the first meeting teaches "mvila@oblivion..." ->
+    project A. Every later meeting for project B then matches BOTH A (via our
+    own attendee) and B (via the client's), which is 2 candidates — ambiguous —
+    so deterministic matching silently stops working entirely and every meeting
+    falls through to the LLM. Our staff attend every client's meetings, so their
+    addresses carry no signal about which project a meeting belongs to."""
+    settings_domains = _internal_domains()
+    emails = {
+        e.lower()
+        for e in attendee_emails
+        if "@" in e and e.lower().rsplit("@", 1)[1] not in settings_domains
+    }
     if not emails:
         return
 
