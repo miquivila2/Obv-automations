@@ -208,6 +208,7 @@ async def calendar_timer(payload: CalendarTimerPayload) -> dict:
             project_id=classification["project_id"],
             intake_id=intake["id"],
             notes=payload.transcript_text,
+            trigger_source="webhook",
         )
         return {"status": "final_qa_checked", "intake_id": intake["id"], **result}
 
@@ -279,6 +280,7 @@ async def orchestrator_run(payload: OrchestratorRunPayload) -> dict:
         # Agent 8 (docs §9.2) — same read-only check as the calendar-timer path.
         result = await run_final_qa_check(
             project_id=payload.project_id, intake_id=payload.intake_id, notes=payload.notes,
+            trigger_source="manual",
         )
         return {"status": "final_qa_checked", **result}
 

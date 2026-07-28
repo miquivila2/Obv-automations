@@ -37,9 +37,35 @@ class ScopeCheck(BaseModel):
         return cls(has_scope_switch=False, summary="[stub] no scope switch detected")
 
 
-async def run_final_qa_check(*, project_id: str, intake_id: str | None, notes: str) -> dict:
+async def run_final_qa_check(
+    *, project_id: str, intake_id: str | None, notes: str, trigger_source: str | None = None
+) -> dict:
     """Agent 8's entire job. Returns a dict describing the outcome; only
-    inserts into `agent.qa_findings` (never public.*) when a switch is found."""
+    inserts into `agent.qa_findings` (never public.*) when a switch is found.
+
+    Tracked in agent.runs same as every graph node (migration 0009 added 'qa'
+    to that table's agent_name constraint) — Agent 8 runs outside the graph
+    (docs §9.2), so it doesn't get app/graph/build.py's `_tracked()` wrapper
+    for free; this is that same observability, wired by hand at the one call
+    site instead. Before this, Agent 8 had zero rows in agent.runs, ever."""
+    from app.services.run_tracking import finish_run, start_run
+
+    run_id = start_run(
+        project_id=project_id, intake_id=intake_id, agent_name="qa", trigger_source=trigger_source
+    )
+    try:
+        result = await _execute(project_id=project_id, intake_id=intake_id, notes=notes)
+    except Exception as exc:
+        finish_run(run_id, status="failed", error=str(exc))
+        raise
+
+    from app.config import model_id_for
+
+    finish_run(run_id, status="success", model_id=model_id_for("qa"))
+    return result
+
+
+async def _execute(*, project_id: str, intake_id: str | None, notes: str) -> dict:
     from app.services.plan_persist import load_latest_plan
 
     plan = load_latest_plan(project_id)

@@ -393,6 +393,15 @@ and no 24/7 worker watching the table. Chosen over a dedicated queue
    "fail loud") for a caller that somehow reaches it without going through
    those two entry points — that path is unchanged and still tested
    (`tests/test_routing.py`).
+
+   **Gap found (later review) and fixed: zero observability.** Being outside
+   the graph meant Agent 8 never got `app/graph/build.py`'s `_tracked()`
+   wrapper — no `agent.runs` row, ever, for any Final QA check. Worse: even
+   wiring it up by hand would have failed, since `'qa'` was never in
+   `agent.runs.agent_name`'s check constraint (migration `0009_runs_allow_qa.sql`
+   fixes that). `run_final_qa_check` now calls `start_run`/`finish_run` itself
+   at its one call site, the same pattern `_tracked()` applies to every graph
+   node — see `app/services/qa_check.py`.
 3. ~~**Progress inspection (update mode)**~~ **DECIDED & IMPLEMENTED:** GitHub
    commits/PRs via the REST API, chosen over an issue-list convention or a
    hand-maintained status file because it needs zero process discipline from the

@@ -18,6 +18,7 @@ _AGENT_NAMES = {
     "gantt",
     "budget",
     "judge",
+    "qa",  # Agent 8 (Final QA) — migration 0009; it runs outside the graph, see qa_check.py
 }
 
 

@@ -223,6 +223,7 @@ async def _execute(event: dict, trace: RunTrace) -> None:
             project_id=classification["project_id"],
             intake_id=intake["id"],
             notes=transcript,
+            trigger_source="mock",
         )
         trace.result["outcome"] = "final_qa_checked"
         trace.result["qa"] = qa
