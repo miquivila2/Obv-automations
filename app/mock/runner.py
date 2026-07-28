@@ -247,6 +247,40 @@ async def _execute(event: dict, trace: RunTrace) -> None:
         final_state.get("needs_human_review"),
     )
 
+    _attach_deliverables(trace, classification["project_id"])
+
+
+def _attach_deliverables(trace: RunTrace, project_id: str) -> None:
+    """Surface whatever got persisted as its own, UI-renderable fields — not
+    buried in raw graph state. By the time the chain reaches Budget,
+    state["draft"] holds only the BUDGET's draft; each earlier artifact only
+    survives in its own table once persisted, so this reads them back from
+    there rather than from final_state. Every artifact is optional: a
+    follow-up run only touches one of them, and this must not fail just
+    because the others were never (re)generated this run."""
+    from app.services.budget_persist import load_latest_budget_lines
+    from app.services.gantt_persist import load_latest_gantt_tasks
+    from app.services.plan_persist import load_latest_plan
+    from app.services.wireframe_persist import load_latest_wireframe
+
+    wireframe = load_latest_wireframe(project_id)
+    if wireframe:
+        trace.result["wireframe_screens"] = wireframe.get("payload", {}).get("screens", [])
+
+    plan = load_latest_plan(project_id)
+    if plan:
+        trace.result["plan"] = plan.get("payload", {})
+
+    gantt_tasks = load_latest_gantt_tasks(project_id)
+    if gantt_tasks:
+        trace.result["gantt_tasks"] = gantt_tasks
+
+    budget_lines = load_latest_budget_lines(project_id)
+    if budget_lines:
+        trace.result["budget_lines"] = budget_lines
+        trace.result["budget_total"] = sum(float(l.get("amount") or 0) for l in budget_lines)
+        trace.result["budget_currency"] = budget_lines[0].get("currency")
+
 
 async def run_pipeline_for_all(event_ids: list[str]) -> list[RunTrace]:
     """Batch runner — one event's failure never stops the others, mirroring

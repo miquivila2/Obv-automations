@@ -97,13 +97,18 @@ def default_events() -> list[dict]:
             "project_id": _PROJECT_ALPHA,
             "language": "es",
             "transcript": (
-                "Reunión de arranque con Northwind. Necesitan un portal de inventario para "
-                "tres almacenes. Requieren login por roles: almacenista, supervisor y "
-                "administrador. El almacenista solo registra entradas y salidas; el supervisor "
-                "aprueba ajustes de stock y ve reportes; el administrador gestiona usuarios y "
-                "catálogos. Piden alertas cuando un artículo baja del mínimo, y un reporte "
-                "mensual exportable a Excel. Trabajan con lectores de código de barras USB "
-                "existentes. Quieren que esté alojado en la nube y accesible desde tablets."
+                "Ops (Northwind): Necesitamos un portal de inventario para tres almacenes.\n"
+                "Miquel (Oblivion): Perfecto. ¿Cómo se organizan los roles hoy en el almacén?\n"
+                "Ops (Northwind): Login por roles: almacenista, supervisor y administrador. "
+                "El almacenista solo registra entradas y salidas.\n"
+                "Miquel (Oblivion): ¿Y el supervisor?\n"
+                "Ops (Northwind): Aprueba ajustes de stock y ve reportes. El administrador "
+                "gestiona usuarios y catálogos.\n"
+                "Miquel (Oblivion): ¿Alguna alerta o reporte específico?\n"
+                "Ops (Northwind): Alertas cuando un artículo baja del mínimo, y un reporte "
+                "mensual exportable a Excel. Ya tenemos lectores de código de barras USB.\n"
+                "Miquel (Oblivion): ¿Dónde se va a alojar?\n"
+                "Ops (Northwind): En la nube, accesible desde tablets."
             ),
         },
         {
@@ -119,10 +124,13 @@ def default_events() -> list[dict]:
             "project_id": _PROJECT_ALPHA,
             "language": "es",
             "transcript": (
-                "Seguimiento sobre el presupuesto del portal de inventario. El cliente considera "
-                "que las horas de QA están altas y quiere reducir el alcance de las pruebas "
-                "automatizadas a los flujos críticos únicamente. También pide separar el módulo "
-                "de reportes como una fase posterior para bajar el costo inicial."
+                "Ops (Northwind): Queríamos hablar del presupuesto del portal.\n"
+                "Miquel (Oblivion): Claro, ¿qué te preocupa?\n"
+                "Ops (Northwind): Las horas de QA están altas. Queremos reducir el alcance de "
+                "las pruebas automatizadas a solo los flujos críticos.\n"
+                "Miquel (Oblivion): Entendido. ¿Algo más?\n"
+                "Ops (Northwind): Sí, separar el módulo de reportes como una fase posterior "
+                "para bajar el costo inicial."
             ),
         },
         {
@@ -138,10 +146,14 @@ def default_events() -> list[dict]:
             "project_id": _PROJECT_BETA,
             "language": "en",
             "transcript": (
-                "Progress check on the analytics dashboard. The ingestion service is done and "
-                "deployed. The charting layer is about half finished — the team is blocked on "
-                "the aggregation query performance. They want the timeline re-planned to account "
-                "for two extra weeks on the data layer, and the reporting milestone pushed back."
+                "Miquel (Oblivion): How's the sprint going?\n"
+                "CTO (Halcyon): The ingestion service is done and deployed.\n"
+                "Miquel (Oblivion): And the charting layer?\n"
+                "CTO (Halcyon): About half finished — we're blocked on aggregation query "
+                "performance.\n"
+                "Miquel (Oblivion): What do you need from us?\n"
+                "CTO (Halcyon): Re-plan the timeline for two extra weeks on the data layer, "
+                "and push back the reporting milestone."
             ),
         },
         {
@@ -157,11 +169,13 @@ def default_events() -> list[dict]:
             "project_id": _PROJECT_BETA,
             "language": "en",
             "transcript": (
-                "Acceptance review for the analytics dashboard. The dashboards look good and the "
-                "team signs off on the agreed scope. Separately, the client now also wants a "
-                "native mobile application for iOS and Android with offline sync, plus a public "
-                "API for their partners. Neither was part of the original engagement, but they'd "
-                "like it included before launch."
+                "Miquel (Oblivion): Let's do the final walkthrough of the dashboards.\n"
+                "CTO (Halcyon): They look good, we sign off on the agreed scope.\n"
+                "Miquel (Oblivion): Great, anything else before launch?\n"
+                "CTO (Halcyon): Actually yes — we now also want a native mobile app for iOS "
+                "and Android with offline sync, plus a public API for our partners.\n"
+                "Miquel (Oblivion): That wasn't part of the original engagement.\n"
+                "CTO (Halcyon): We know, but we'd like it included before launch."
             ),
         },
         {
@@ -177,8 +191,10 @@ def default_events() -> list[dict]:
             "project_id": None,
             "language": "en",
             "transcript": (
-                "Intro call with a prospect we have no project for yet. They described wanting "
-                "some kind of scheduling tool but nothing is decided. No scope agreed."
+                "Miquel (Oblivion): Tell me a bit about what you're looking for.\n"
+                "Prospect: We're not sure yet — some kind of scheduling tool, maybe.\n"
+                "Miquel (Oblivion): Any specifics on users or workflow?\n"
+                "Prospect: Not really, nothing is decided on our end yet."
             ),
         },
         {

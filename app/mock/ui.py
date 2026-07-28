@@ -151,11 +151,28 @@ async def generate_meetings(count: int = 5) -> dict:
     projects = store.rows("public", "projects")
     now = datetime.now(timezone.utc)
 
+    # Dialogue-formatted ("Speaker: line") like the seed fixtures, not a single
+    # narrative paragraph — this is what the console renders under each
+    # meeting's "transcript" details, and what the classifier stub actually
+    # scans for keywords.
     classes = [
-        ("kickoff / onboarding", "Necesitan un sistema nuevo con varios roles de usuario y reportes mensuales."),
-        ("budget follow-up", "El cliente pide revisar el presupuesto y reducir horas de QA."),
-        ("progress update", "Progress check: ingestion done, charting half finished, timeline needs re-planning."),
-        ("final QA", "Acceptance review. They also now want a mobile app that was never scoped."),
+        ("kickoff / onboarding", (
+            "Client: We need a new system with several user roles and monthly reports.\n"
+            "Miquel (Oblivion): Got it, let's scope that out."
+        )),
+        ("budget follow-up", (
+            "Client: Can we revisit the budget? We'd like to reduce QA hours.\n"
+            "Miquel (Oblivion): Sure, let's see what we can trim."
+        )),
+        ("progress update", (
+            "Miquel (Oblivion): How's the sprint going?\n"
+            "Client: Ingestion is done, charting is half finished, and the timeline needs "
+            "re-planning."
+        )),
+        ("final QA", (
+            "Miquel (Oblivion): Let's do the acceptance review.\n"
+            "Client: Looks good — but we'd also like a mobile app that was never scoped."
+        )),
     ]
 
     created = []
@@ -192,7 +209,14 @@ async def console() -> str:
     return _HTML
 
 
-_HTML = """<!doctype html>
+# Raw string, deliberately: this HTML block embeds JS regex literals (\n, \s,
+# etc.) that must reach the browser as literal backslash-sequences. A normal
+# triple-quoted string lets PYTHON's own escape processing consume them first
+# (e.g. \n silently becomes a real newline, breaking a `/\n+/` regex into an
+# unterminated one) — found the hard way when the console's transcript
+# rendering broke with no visible error. `r"""..."""` makes every backslash
+# in here pass through untouched, so this class of bug can't recur.
+_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -250,6 +274,45 @@ _HTML = """<!doctype html>
   details summary { cursor:pointer; font:11px var(--mono); color:var(--muted); margin-top:8px; }
   .empty { color:var(--muted); font-style:italic; }
   .counts { font:11px var(--mono); color:var(--muted); }
+
+  /* ---------- Wireframe screen mockups ---------- */
+  .screens { display:flex; flex-wrap:wrap; gap:12px; margin-top:10px; }
+  .screen-mock { width:168px; background:#0c1113; border:1px solid var(--line);
+                 border-radius:6px; overflow:hidden; }
+  .screen-mock .titlebar { background:var(--accent); color:#04191d; font:600 10px var(--mono);
+                 padding:5px 8px; letter-spacing:.03em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .screen-mock .body { padding:8px; display:flex; flex-direction:column; gap:5px; min-height:110px; }
+  .screen-mock .comp { background:var(--panel); border:1px solid var(--line); border-radius:3px;
+                 padding:4px 6px; font:10px system-ui; color:var(--ink); }
+  .screen-mock .purpose { font:10px/1.4 system-ui; color:var(--muted); margin:0 0 2px; }
+  .screen-mock .roles { display:flex; flex-wrap:wrap; gap:3px; padding:0 8px 8px; }
+  .screen-mock .role-chip { font:9px var(--mono); background:var(--accent-soft); color:var(--accent);
+                 padding:1px 5px; border-radius:8px; }
+  .screen-mock .nav { font:9px var(--mono); color:var(--muted); padding:0 8px 8px; }
+
+  /* ---------- Dialogue-formatted transcript ---------- */
+  .dialogue { font:12px/1.6 var(--mono); background:#0c1113; border:1px solid var(--line);
+                 border-radius:4px; padding:8px 9px; max-height:160px; overflow-y:auto; }
+  .dialogue .turn { margin-bottom:3px; }
+  .dialogue .speaker { color:var(--accent); font-weight:600; }
+
+  /* ---------- Plan / Gantt / Budget deliverable panels ---------- */
+  .deliverable { margin-top:10px; }
+  .deliverable > summary { font:600 11px var(--mono); letter-spacing:.05em; text-transform:uppercase;
+                 color:var(--accent); cursor:pointer; padding:3px 0; }
+  .phase { background:#0c1113; border:1px solid var(--line); border-radius:4px;
+                 padding:8px 10px; margin-top:6px; }
+  .phase .pname { font-weight:600; font-size:12.5px; margin-bottom:4px; }
+  .phase ul { margin:0; padding-left:18px; font-size:12px; color:var(--muted); }
+  .needs-row { display:flex; gap:16px; margin-top:6px; font:11px var(--mono); color:var(--muted); flex-wrap:wrap; }
+  .needs-row b { color:var(--ink); }
+  table.dtable { width:100%; border-collapse:collapse; margin-top:6px; font-size:12px; }
+  table.dtable th { text-align:left; font:10px var(--mono); text-transform:uppercase;
+                 letter-spacing:.04em; color:var(--muted); border-bottom:1px solid var(--line-strong, var(--line));
+                 padding:4px 6px; }
+  table.dtable td { padding:5px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  table.dtable td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .budget-total { text-align:right; font:600 13px var(--mono); margin-top:6px; color:var(--ink); }
 </style>
 </head>
 <body>
@@ -287,8 +350,8 @@ _HTML = """<!doctype html>
       <label>Project id (blank = let classification decide)</label><input id="f_project">
       <label>Language</label>
       <select id="f_language"><option value="es">es</option><option value="en">en</option></select>
-      <label>Transcript (stands in for the Plaud recording)</label>
-      <textarea id="f_transcript"></textarea>
+      <label>Transcript (stands in for the Plaud recording) — dialogue format, one "Speaker: line" per line</label>
+      <textarea id="f_transcript" placeholder="Client: We need a portal with role-based login.&#10;Miquel (Oblivion): Got it, tell me more about the roles."></textarea>
       <div class="row">
         <button onclick="save()" class="primary">Save meeting</button>
         <button onclick="clearForm()">Clear</button>
@@ -322,6 +385,20 @@ function esc(s) {
     ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+function dialogueHtml(transcript) {
+  if (!transcript) return '<p class="empty" style="margin:6px 0 0">empty transcript</p>';
+  // Turns are "Speaker: text" lines (see app/mock/seed.py). Anything that
+  // doesn't match a "Name: " prefix is shown as a plain continuation line
+  // rather than dropped, so free-form transcripts still render.
+  const turns = transcript.split(/\n+/).filter(Boolean).map(line => {
+    const m = line.match(/^([^:]{1,32}):\s*(.*)$/);
+    return m
+      ? `<div class="turn"><span class="speaker">${esc(m[1])}:</span> ${esc(m[2])}</div>`
+      : `<div class="turn">${esc(line)}</div>`;
+  });
+  return `<div class="dialogue">${turns.join('')}</div>`;
+}
+
 async function load() {
   const data = await api('/meetings');
   meetings = data.meetings;
@@ -334,6 +411,7 @@ async function load() {
       <div class="meta">${esc(m.language)} · ${esc(m.status)} · ${esc(m.location)} ·
         ${(m.attendee_ids||[]).length} participant(s) ·
         ${m.transcript ? m.transcript.length + ' chars' : '<span style="color:var(--warn)">empty transcript</span>'}</div>
+      <details style="margin-top:8px"><summary>transcript</summary>${dialogueHtml(m.transcript)}</details>
       <div class="row">
         <button onclick="run('${m.id}')" class="primary">▶ Run pipeline</button>
         <button onclick="edit('${m.id}')">Edit</button>
@@ -402,6 +480,78 @@ async function resetDb() {
   load();
 }
 
+function screenMocks(screens) {
+  if (!screens || !screens.length) return '';
+  const cards = screens.map(s => `
+    <div class="screen-mock">
+      <div class="titlebar">${esc(s.name)}</div>
+      <div class="body">
+        <p class="purpose">${esc(s.purpose||'')}</p>
+        ${(s.components||[]).map(c => `<div class="comp">${esc(c)}</div>`).join('')}
+      </div>
+      ${(s.visible_to_roles||[]).length ? `<div class="roles">${
+        s.visible_to_roles.map(r => `<span class="role-chip">${esc(r)}</span>`).join('')}</div>` : ''}
+      ${(s.navigates_to||[]).length ? `<div class="nav">→ ${esc(s.navigates_to.join(', '))}</div>` : ''}
+    </div>`).join('');
+  return `<details open style="margin-top:10px">
+    <summary>wireframe — ${screens.length} screen(s)</summary>
+    <div class="screens">${cards}</div>
+  </details>`;
+}
+
+function planPanel(plan) {
+  if (!plan || !plan.phases) return '';
+  const needs = plan.needs || {};
+  const phases = plan.phases.map(p => `
+    <div class="phase">
+      <div class="pname">${esc(p.name)}</div>
+      <ul>${(p.items||[]).map(i => `<li>${esc(i)}</li>`).join('')}</ul>
+    </div>`).join('');
+  return `<details open class="deliverable"><summary>plan — ${plan.phases.length} phase(s)</summary>
+    <div class="needs-row">
+      <span><b>Software:</b> ${esc((needs.software||[]).join(', ') || '—')}</span>
+      <span><b>Hardware:</b> ${esc((needs.hardware||[]).join(', ') || '—')}</span>
+      <span><b>Cloud:</b> ${esc((needs.cloud||[]).join(', ') || '—')}</span>
+    </div>
+    ${phases}
+  </details>`;
+}
+
+function ganttPanel(tasks) {
+  if (!tasks || !tasks.length) return '';
+  const rows = tasks.map(t => `
+    <tr>
+      <td>${esc(t.phase)}</td>
+      <td>${esc(t.name)}</td>
+      <td class="num">${esc(t.duration_days)}d</td>
+      <td>${esc((t.depends_on||[]).length)} dep(s)</td>
+    </tr>`).join('');
+  return `<details open class="deliverable"><summary>gantt — ${tasks.length} task(s)</summary>
+    <table class="dtable">
+      <thead><tr><th>Phase</th><th>Task</th><th>Duration</th><th>Depends on</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </details>`;
+}
+
+function budgetPanel(lines, total, currency) {
+  if (!lines || !lines.length) return '';
+  const rows = lines.map(l => `
+    <tr>
+      <td>${esc(l.category)}</td>
+      <td>${esc(l.description)}<div class="meta">${esc(l.details||'')}</div></td>
+      <td class="num">${esc(l.quantity)}h</td>
+      <td class="num">${esc(l.amount)}</td>
+    </tr>`).join('');
+  return `<details open class="deliverable"><summary>budget — ${lines.length} line(s)</summary>
+    <table class="dtable">
+      <thead><tr><th>Category</th><th>Description</th><th>Hours</th><th>Amount</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="budget-total">Total: ${esc(total)} ${esc(currency||'')}</div>
+  </details>`;
+}
+
 function renderTrace(t) {
   const cls = t.ok ? 'ok' : 'bad';
   const logs = (t.logs||[]).map(l =>
@@ -418,7 +568,11 @@ function renderTrace(t) {
     <div class="meta">stage=${esc(t.stage)} · ${t.duration_ms}ms · ${esc(t.event_id)}</div>
     ${t.error ? `<pre style="color:var(--bad)">${esc(t.error)}</pre>` : ''}
     ${delta.length ? `<div class="meta" style="margin-top:6px">writes → ${esc(delta.join('   '))}</div>` : ''}
-    <details><summary>result</summary><pre>${esc(JSON.stringify(t.result, null, 2))}</pre></details>
+    ${screenMocks(t.result && t.result.wireframe_screens)}
+    ${planPanel(t.result && t.result.plan)}
+    ${ganttPanel(t.result && t.result.gantt_tasks)}
+    ${budgetPanel(t.result && t.result.budget_lines, t.result && t.result.budget_total, t.result && t.result.budget_currency)}
+    <details><summary>raw result JSON</summary><pre>${esc(JSON.stringify(t.result, null, 2))}</pre></details>
     ${t.traceback ? `<details><summary>traceback</summary><pre>${esc(t.traceback)}</pre></details>` : ''}
     <details open><summary>logs (${(t.logs||[]).length})</summary><div class="logs">${logs}</div></details>
   </div>`;

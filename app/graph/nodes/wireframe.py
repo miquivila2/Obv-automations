@@ -44,23 +44,95 @@ class WireframeDraft(BaseModel):
     screens: list[WireframeScreen]
 
     @classmethod
-    def stub(cls) -> "WireframeDraft":
+    def stub(cls, messages: list | None = None) -> "WireframeDraft":
+        """Canned output for MODEL_PROVIDER=stub.
+
+        With no context, a fixed 2-screen skeleton — enough to exercise the
+        Judge/persist plumbing after it in production dev, nothing more.
+
+        Given the real messages (see app/services/stub_models.py — same
+        opt-in mechanism as ClassificationResult.stub), derives a richer set
+        of screens from keywords in the notes instead, up to 5. This is what
+        lets the mock harness (app/mock/) show something resembling an actual
+        wireframe instead of the same 2 placeholder screens for every meeting."""
+        if not messages:
+            return cls(
+                screens=[
+                    WireframeScreen(
+                        name="[stub] Dashboard",
+                        purpose="Landing screen after login.",
+                        components=["Summary cards", "Recent activity list"],
+                        visible_to_roles=[],
+                        navigates_to=["[stub] Detail"],
+                    ),
+                    WireframeScreen(
+                        name="[stub] Detail",
+                        purpose="Drill into one item.",
+                        components=["Item header", "Edit form"],
+                        visible_to_roles=[],
+                        navigates_to=[],
+                    ),
+                ]
+            )
+
+        text = " ".join(
+            str(part)
+            for message in messages
+            for part in (message if isinstance(message, (tuple, list)) else [getattr(message, "content", message)])
+        ).lower()
+
+        roles = []
+        for keyword, role in (
+            ("almacenista", "warehouse staff"), ("supervisor", "supervisor"),
+            ("administrador", "admin"), ("admin", "admin"), ("manager", "manager"),
+        ):
+            if keyword in text and role not in roles:
+                roles.append(role)
+
+        candidates = [
+            ("Login", "Role-based sign-in.", ["Email/username field", "Password field", "Role redirect"], []),
+            ("Dashboard", "Landing screen after login; at-a-glance summary.",
+             ["Summary cards", "Recent activity list"], roles),
+            ("Inventory / Stock", "Register entries and exits; barcode scan support.",
+             ["Barcode scan input", "Item list", "Quantity adjust"], roles[:1]),
+            ("Approvals", "Review and approve pending stock/budget adjustments.",
+             ["Pending list", "Approve/reject buttons", "Audit trail"], roles[1:2] or roles[:1]),
+            ("Reports", "Monthly exportable report.", ["Date range filter", "Export to Excel button", "Summary chart"], roles),
+            ("User Management", "Manage users, roles and catalogs.",
+             ["User list", "Role assignment", "Catalog editor"], roles[-1:] or roles),
+            ("Alerts", "Low-stock and threshold notifications.", ["Alert list", "Threshold config"], roles[:1]),
+        ]
+
+        keywords_by_screen = {
+            "Login": ["login", "rol", "role", "acceso"],
+            "Inventory / Stock": ["inventario", "inventory", "stock", "almac", "código de barras", "barcode"],
+            "Approvals": ["aprob", "approv", "ajuste"],
+            "Reports": ["reporte", "report", "excel", "export"],
+            "User Management": ["usuario", "user", "catálogo", "catalog", "gestion"],
+            "Alerts": ["alerta", "alert", "mínimo", "threshold"],
+        }
+
+        selected = [c for c in candidates if c[0] == "Dashboard"]  # Dashboard always present
+        for cand in candidates:
+            name = cand[0]
+            if name == "Dashboard":
+                continue
+            triggers = keywords_by_screen.get(name)
+            if triggers is None or any(k in text for k in triggers):
+                selected.append(cand)
+        selected = selected[:5]
+
+        names = [f"[stub] {c[0]}" for c in selected]
         return cls(
             screens=[
                 WireframeScreen(
-                    name="[stub] Dashboard",
-                    purpose="Landing screen after login.",
-                    components=["Summary cards", "Recent activity list"],
-                    visible_to_roles=[],
-                    navigates_to=["[stub] Detail"],
-                ),
-                WireframeScreen(
-                    name="[stub] Detail",
-                    purpose="Drill into one item.",
-                    components=["Item header", "Edit form"],
-                    visible_to_roles=[],
-                    navigates_to=[],
-                ),
+                    name=f"[stub] {name}",
+                    purpose=purpose,
+                    components=components,
+                    visible_to_roles=screen_roles,
+                    navigates_to=[n for n in names if n != f"[stub] {name}"][:2],
+                )
+                for name, purpose, components, screen_roles in selected
             ]
         )
 
