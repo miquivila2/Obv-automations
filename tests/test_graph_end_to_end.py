@@ -120,15 +120,16 @@ async def test_gantt_side_tables_are_written_alongside_the_crm_rows(fake):
     assert {r["gantt_task_id"] for r in fake.rows("agent", "gantt_task_details")} == task_ids
 
 
-async def test_budget_docx_is_uploaded_to_storage(fake):
+async def test_budget_pdf_is_uploaded_to_storage(fake):
+    # Was .docx; switched to PDF (docs §5.2/§9.12 reopened) — see budget_pdf.py.
     await _run_chain(_onboarding_state())
 
     assert len(fake.uploads) == 1
     upload = fake.uploads[0]
     assert upload["bucket"] == "budgets"
     assert upload["path"].startswith("p1/budget_")
-    assert upload["path"].endswith(".docx")
-    assert isinstance(upload["content"], bytes) and len(upload["content"]) > 0
+    assert upload["path"].endswith(".pdf")
+    assert upload["content"][:4] == b"%PDF"
 
 
 # ---------------------------------------------------------------------------

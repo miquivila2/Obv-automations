@@ -82,6 +82,12 @@ class Settings(BaseSettings):
     # --- Judge loop ---
     judge_max_rounds: int = 2
 
+    # --- Budget (Axo Capital format, docs §5.2/§9.12) ---
+    # Default IVA rate applied to every new budget document — 16%, matching
+    # the real Axo Capital reference. Editable per-document afterwards
+    # (agent.budget_documents.iva_rate); this is only the starting value.
+    budget_default_iva_rate: float = 0.16
+
 
 @lru_cache
 def get_settings() -> Settings:

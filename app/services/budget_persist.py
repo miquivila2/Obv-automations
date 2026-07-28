@@ -1,4 +1,6 @@
-"""Persist an approved budget draft into the CRM: line items + a .docx in Storage.
+"""Persist an approved budget draft into the CRM: line items + a PDF in Storage,
+plus the Axo Capital-format document metadata (agent.budget_documents) —
+monthly discounts, IVA, contingency, market comparison, milestones.
 
 Handles regeneration (follow-up mode) the same way gantt_persist does (docs §5,
 gap #1/#2): `budget_line_items` already has a `source` column, so unlike Gantt we
@@ -91,30 +93,122 @@ def _row(li: dict, *, project_id: str, currency: str) -> dict:
     }
 
 
+def _load_budget_document_row(supabase, project_id: str) -> dict | None:
+    rows = (
+        supabase.schema("agent")
+        .table("budget_documents")
+        .select("*")
+        .eq("project_id", project_id)
+        .limit(1)
+        .execute()
+        .data
+    )
+    return rows[0] if rows else None
+
+
+def load_assembled_budget_document(project_id: str) -> dict | None:
+    """Read-only: re-assemble the full Axo Capital-format document (months,
+    discounts, IVA, market comparison, milestones) from whatever is currently
+    persisted — agent.budget_documents for the human-entered fields plus
+    public.budget_line_items for the priced lines. Reflects the LATEST human
+    edits (e.g. via the mock console's edit form), not a stale snapshot from
+    whenever Agent 5 last ran. Returns None if no budget exists yet for this
+    project. Shared by the mock runner (trace display) and the mock console's
+    JSON/PDF export endpoints — one assembly path, not two."""
+    from app.db.client import get_supabase
+    from app.services.budget_document import assemble_budget_document
+
+    supabase = get_supabase()
+    doc_row = _load_budget_document_row(supabase, project_id)
+    if doc_row is None:
+        return None
+
+    lines = load_latest_budget_lines(project_id)
+    if not lines:
+        return None
+
+    project_name = _fetch_project_name(supabase, project_id)
+    return assemble_budget_document(
+        project_name=project_name,
+        currency=doc_row["currency"],
+        priced_lines=[{**li, "hours": li["quantity"], "justification": li.get("details")} for li in lines],
+        iva_rate=doc_row["iva_rate"],
+        discount_pct_by_month=doc_row.get("discount_pct_by_month") or {},
+        contingency_pct=doc_row.get("contingency_pct"),
+        milestones=doc_row.get("milestones") or [],
+    )
+
+
 def persist_budget(*, project_id: str, draft: dict) -> dict:
     """Upsert the priced lines into public.budget_line_items (agent-owned rows
-    only) and upload the .docx. Returns counts for observability."""
+    only), assemble the full Axo Capital-format document (months, discounts,
+    IVA, market comparison, milestones — see app.services.budget_document),
+    upload it as a PDF, and upsert agent.budget_documents. Returns counts for
+    observability.
+
+    CRITICAL on regeneration: discount_pct_by_month, contingency_pct, and each
+    milestone's part_pct are HUMAN-ENTERED fields. If a document already
+    exists for this project, those human edits are carried forward as-is —
+    only genuinely NEW months (never seen before) get a fresh 0% default.
+    Regenerating the budget must never silently wipe out a discount or
+    contingency percentage a human already set."""
+    from app.config import get_settings
     from app.db.client import get_supabase
-    from app.services.budget_docx import render_budget_docx
+    from app.services.budget_document import assemble_budget_document, default_milestones
+    from app.services.budget_pdf import render_budget_pdf
 
     supabase = get_supabase()
     currency = draft["currency"]
     lines = draft["lines"]
-
-    # 1. Render + upload the .docx (Storage). Path is per-project + timestamped.
     project_name = _fetch_project_name(supabase, project_id)
-    docx_bytes = render_budget_docx(
-        project_name=project_name, currency=currency, lines=lines, subtotal=draft["subtotal"]
-    )
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    file_path = f"{project_id}/budget_{stamp}.docx"
-    supabase.storage.from_(_BUCKET).upload(
-        file_path,
-        docx_bytes,
-        {"content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+
+    # Preserve human-entered fields across regenerations (see docstring above).
+    existing_doc = _load_budget_document_row(supabase, project_id)
+    months_in_draft = list(dict.fromkeys(li.get("month") or "Unscheduled" for li in lines))
+
+    discount_pct_by_month = dict((existing_doc or {}).get("discount_pct_by_month") or {})
+    for month in months_in_draft:
+        discount_pct_by_month.setdefault(month, 0)
+
+    contingency_pct = (existing_doc or {}).get("contingency_pct")
+    iva_rate = (existing_doc or {}).get("iva_rate") or get_settings().budget_default_iva_rate
+    milestones = (existing_doc or {}).get("milestones") or default_milestones(months_in_draft)
+
+    document = assemble_budget_document(
+        project_name=project_name,
+        currency=currency,
+        priced_lines=lines,
+        iva_rate=iva_rate,
+        discount_pct_by_month=discount_pct_by_month,
+        contingency_pct=contingency_pct,
+        milestones=milestones,
     )
 
-    # 2. Upsert the line items — never touches a source='human' row.
+    # 1. Render + upload the PDF (Storage). Path is per-project + timestamped.
+    pdf_bytes = render_budget_pdf(project_name=project_name, document=document)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    file_path = f"{project_id}/budget_{stamp}.pdf"
+    supabase.storage.from_(_BUCKET).upload(
+        file_path, pdf_bytes, {"content-type": "application/pdf"}
+    )
+
+    # 2. Upsert agent.budget_documents — one row per project, human fields preserved.
+    supabase.schema("agent").table("budget_documents").upsert(
+        {
+            "project_id": project_id,
+            "currency": currency,
+            "iva_rate": iva_rate,
+            "discount_pct_by_month": discount_pct_by_month,
+            "contingency_pct": contingency_pct,
+            "milestones": milestones,
+            "market_comparison": document["market_comparison"],
+            "model_id": draft.get("model_id"),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+        on_conflict="project_id",
+    ).execute()
+
+    # 3. Upsert the line items — never touches a source='human' row.
     existing_agent_lines = (
         supabase.table("budget_line_items")
         .select("id,gantt_task_id,position")
