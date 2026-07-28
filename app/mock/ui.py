@@ -571,16 +571,24 @@ function outcomeNotice(t) {
       why: 'This meeting was already run before (agent.meeting_intake.event_id is UNIQUE — that\'s Agent 1\'s real idempotency guarantee, working correctly). Nothing re-ran, so there\'s nothing new to show below.',
       fix: 'To see a fresh run: click "Reset DB" (wipes and re-seeds), or "+ Generate 5" for new meetings, or create one below with your own transcript.',
     },
-    pending_review: {
-      why: 'Classification confidence came back below the threshold (0.70), so the build chain never ran — this mirrors production: low-confidence meetings stop at a human review queue instead of guessing.',
-      fix: 'With the stub model this usually means the deterministic project match didn\'t hit. Make sure attendee emails match an existing project\'s matcher (see the seeded meetings), or mention the project name/client in the transcript.',
-    },
     final_qa_checked: {
       why: 'This was a Final QA meeting — Agent 8 only checks for a scope switch against the existing plan; it never builds a wireframe/plan/Gantt/budget. That\'s by design (docs §9.2), not a failure.',
       fix: 'To see the 4 deliverables, run an "onboarding" meeting instead (see the Northwind kickoff example).',
     },
   };
-  const n = outcome && notices[outcome];
+  const pendingReviewNotices = {
+    low_confidence: {
+      why: 'Classification confidence came back below the threshold (0.70), so the build chain never ran — this mirrors production: low-confidence meetings stop at a human review queue instead of guessing.',
+      fix: 'With the stub model this usually means no explicit class keyword was found AND the transcript was short/generic. A longer, substantive transcript (or an explicit signal like "follow-up on the budget") should clear the threshold.',
+    },
+    no_project_match: {
+      why: 'The meeting class was classified confidently, but no project matched (project_id is null) — and per docs §4.1, this system never auto-creates a project, so it goes to human review regardless of how confident the class itself was. (This exact gap was live in the code until this session\'s fix — a confident classification with no project used to sail straight into the build chain and write orphaned rows.)',
+      fix: 'Make attendee emails match an existing seeded project (see Northwind/Halcyon), or accept that a genuinely brand-new client always needs a human to create the project first — that\'s the intended behavior, not a bug to work around.',
+    },
+  };
+  const n = outcome === 'pending_review'
+    ? (pendingReviewNotices[(t.result && t.result.reason) || 'low_confidence'])
+    : (outcome && notices[outcome]);
   if (!n) return '';
   return `<div style="background:var(--accent-soft); border:1px solid var(--accent); border-radius:4px;
               padding:8px 10px; margin-top:8px; font-size:12.5px;">

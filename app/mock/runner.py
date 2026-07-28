@@ -189,10 +189,25 @@ async def _execute(event: dict, trace: RunTrace) -> None:
     threshold = get_settings().classification_confidence_threshold
     if classification["confidence"] < threshold:
         trace.result["outcome"] = "pending_review"
+        trace.result["reason"] = "low_confidence"
         logger.warning(
             "confidence %.2f below threshold %.2f -> pending_review, chain NOT run",
             classification["confidence"],
             threshold,
+        )
+        return
+
+    if not classification["project_id"]:
+        # Mirrors app/main.py's calendar_timer guard (same production bug,
+        # caught live via this harness): a confident CLASS with no matched
+        # project must still go to review, not run — see docs §4.1. Without
+        # this, a real run wrote budget_line_items with project_id=None.
+        trace.result["outcome"] = "pending_review"
+        trace.result["reason"] = "no_project_match"
+        logger.warning(
+            "project_id is null despite confidence %.2f -> pending_review, chain NOT run "
+            "(docs §4.1: never auto-create a project)",
+            classification["confidence"],
         )
         return
 

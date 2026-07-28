@@ -200,3 +200,40 @@ def test_unique_constraint_is_enforced_on_insert(tmp_path):
     store.schema("agent").table("meeting_intake").insert({"event_id": "e1"}).execute()
     with pytest.raises(MockDatabaseError, match="unique constraint"):
         store.schema("agent").table("meeting_intake").insert({"event_id": "e1"}).execute()
+
+
+# ---------------------------------------------------------------------------
+# The runner must never build for a confident classification with no project
+# ---------------------------------------------------------------------------
+async def test_runner_holds_for_review_when_confident_but_no_project_matched(mock_settings):
+    # Same production bug as test_main.py's calendar_timer test, exercised
+    # through the actual mock pipeline runner instead of a stubbed endpoint:
+    # attendees that match no seeded project, but a transcript with an
+    # explicit class keyword (so the stub IS confident about the class).
+    from app.mock.runner import run_pipeline_for_event
+    from app.mock.store import get_mock_store
+
+    store = get_mock_store()
+    store.replace_table(
+        "public",
+        "events",
+        [
+            {
+                "id": "e-unmatched",
+                "title": "Unmatched attendee follow-up",
+                "attendee_ids": ["nobody@unknown-client.example"],
+                "language": "en",
+                "transcript": "Quick follow-up on the budget for this project.",
+            }
+        ],
+    )
+
+    trace = await run_pipeline_for_event("e-unmatched")
+
+    assert trace.ok is True
+    assert trace.result["outcome"] == "pending_review"
+    assert trace.result["reason"] == "no_project_match"
+    assert trace.result["classification"]["confidence"] >= 0.70
+    assert trace.result["classification"]["project_id"] is None
+    # The actual regression: no orphaned budget rows with project_id=None.
+    assert store.rows("public", "budget_line_items") == []

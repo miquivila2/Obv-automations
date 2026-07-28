@@ -85,6 +85,44 @@ def test_empty_string_secret_is_treated_as_unconfigured(monkeypatch):
     assert resp.status_code == 200
 
 
+def test_calendar_timer_holds_for_review_when_confident_but_no_project_matched(monkeypatch):
+    # Real bug caught via the mock harness: a classification can be genuinely
+    # confident about the meeting CLASS while finding no matching project
+    # (project_id=None). docs §4.1 — "we never auto-create a new project ...
+    # if nothing matches, it goes to human review" — regardless of how sure
+    # the class is. Before this guard, this sailed straight into the build
+    # graph and wrote real rows (budget_line_items etc.) with no project to
+    # attach them to. _run_graph must never be reached in this case.
+    async def _fake_ingest(**_kwargs):
+        return {
+            "id": "intake-1",
+            "classification": {
+                "project_id": None,
+                "new_project_suggested_name": None,
+                "meeting_class": "follow_up",
+                "sub_type": "budget",
+                "confidence": 0.95,
+                "reasoning": "confident about class, no project match",
+            },
+        }
+
+    async def _boom(_state):
+        raise AssertionError("_run_graph must not be called when project_id is None")
+
+    monkeypatch.setattr("app.main.ingest_meeting", _fake_ingest)
+    monkeypatch.setattr("app.main._run_graph", _boom)
+
+    resp = client.post(
+        "/webhooks/calendar-timer",
+        json={
+            "event_id": "e1", "attendee_emails": [], "language": "en",
+            "transcript_text": "n",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "pending_review", "intake_id": "intake-1"}
+
+
 def test_orchestrator_run_routes_final_qa_to_agent_8(monkeypatch):
     # Agent 8 (docs §9.2) — a real, narrow check, not the build graph and not
     # a 500 from orchestrator.route()'s NotImplementedError. No plan on file

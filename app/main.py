@@ -191,7 +191,15 @@ async def calendar_timer(payload: CalendarTimerPayload) -> dict:
     intake = await ingest_meeting(**payload.model_dump())
     classification = intake.get("classification")
 
-    if not classification or classification["confidence"] < 0.70:
+    if not classification or classification["confidence"] < 0.70 or not classification["project_id"]:
+        # project_id is checked separately from confidence: a classifier can
+        # be genuinely confident about the meeting CLASS while still finding
+        # no matching project (docs §4.1 — "we never auto-create a new
+        # project... if nothing matches, it goes to human review", regardless
+        # of how sure the class itself is). Found live: a high-confidence
+        # classification with project_id=None previously sailed straight into
+        # the build graph and wrote real CRM rows (budget_line_items,
+        # gantt_tasks, ...) with no project to attach them to.
         return {"status": "pending_review", "intake_id": intake["id"]}
 
     if classification["meeting_class"] == "final_qa":
