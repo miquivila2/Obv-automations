@@ -50,7 +50,16 @@ def _store():
 @router.get("/api/meetings")
 async def list_meetings() -> dict:
     store = _store()
-    return {"meetings": store.rows("public", "events"), "counts": store.counts()}
+    events = store.rows("public", "events")
+    # Flag which meetings Agent 1 already ingested (event_id is UNIQUE), so the
+    # console can warn BEFORE a click, not just explain an empty result after —
+    # this is the single most confusing thing about the harness otherwise:
+    # clicking "Run pipeline" again on an already-processed meeting looks like
+    # nothing works, when idempotency is doing exactly its job.
+    processed_ids = {i.get("event_id") for i in store.rows("agent", "meeting_intake")}
+    for event in events:
+        event["_already_processed"] = event.get("id") in processed_ids
+    return {"meetings": events, "counts": store.counts()}
 
 
 @router.post("/api/meetings")
@@ -406,11 +415,14 @@ async function load() {
     .map(([k,v]) => k + '=' + v).join('  ');
   $('list').innerHTML = meetings.length ? meetings.map(m => `
     <div class="card">
-      <h3>${esc(m.title) || '<em>untitled</em>'}</h3>
+      <h3>${esc(m.title) || '<em>untitled</em>'}
+        ${m._already_processed ? '<span class="badge ok" style="margin-left:6px; vertical-align:2px;">already run</span>' : ''}
+      </h3>
       <div class="meta">${esc(m.id)}</div>
       <div class="meta">${esc(m.language)} · ${esc(m.status)} · ${esc(m.location)} ·
         ${(m.attendee_ids||[]).length} participant(s) ·
         ${m.transcript ? m.transcript.length + ' chars' : '<span style="color:var(--warn)">empty transcript</span>'}</div>
+      ${m._already_processed ? '<div class="meta" style="color:var(--accent); margin-top:2px;">Re-running will report "already ingested" — idempotency, not a bug. Reset DB or generate new ones to see fresh output.</div>' : ''}
       <details style="margin-top:8px"><summary>transcript</summary>${dialogueHtml(m.transcript)}</details>
       <div class="row">
         <button onclick="run('${m.id}')" class="primary">▶ Run pipeline</button>
@@ -552,6 +564,31 @@ function budgetPanel(lines, total, currency) {
   </details>`;
 }
 
+function outcomeNotice(t) {
+  const outcome = t.result && t.result.outcome;
+  const notices = {
+    already_ingested: {
+      why: 'This meeting was already run before (agent.meeting_intake.event_id is UNIQUE — that\'s Agent 1\'s real idempotency guarantee, working correctly). Nothing re-ran, so there\'s nothing new to show below.',
+      fix: 'To see a fresh run: click "Reset DB" (wipes and re-seeds), or "+ Generate 5" for new meetings, or create one below with your own transcript.',
+    },
+    pending_review: {
+      why: 'Classification confidence came back below the threshold (0.70), so the build chain never ran — this mirrors production: low-confidence meetings stop at a human review queue instead of guessing.',
+      fix: 'With the stub model this usually means the deterministic project match didn\'t hit. Make sure attendee emails match an existing project\'s matcher (see the seeded meetings), or mention the project name/client in the transcript.',
+    },
+    final_qa_checked: {
+      why: 'This was a Final QA meeting — Agent 8 only checks for a scope switch against the existing plan; it never builds a wireframe/plan/Gantt/budget. That\'s by design (docs §9.2), not a failure.',
+      fix: 'To see the 4 deliverables, run an "onboarding" meeting instead (see the Northwind kickoff example).',
+    },
+  };
+  const n = outcome && notices[outcome];
+  if (!n) return '';
+  return `<div style="background:var(--accent-soft); border:1px solid var(--accent); border-radius:4px;
+              padding:8px 10px; margin-top:8px; font-size:12.5px;">
+    <strong style="color:var(--accent)">Why nothing generated:</strong> ${esc(n.why)}<br>
+    <span style="color:var(--muted)">${esc(n.fix)}</span>
+  </div>`;
+}
+
 function renderTrace(t) {
   const cls = t.ok ? 'ok' : 'bad';
   const logs = (t.logs||[]).map(l =>
@@ -568,6 +605,7 @@ function renderTrace(t) {
     <div class="meta">stage=${esc(t.stage)} · ${t.duration_ms}ms · ${esc(t.event_id)}</div>
     ${t.error ? `<pre style="color:var(--bad)">${esc(t.error)}</pre>` : ''}
     ${delta.length ? `<div class="meta" style="margin-top:6px">writes → ${esc(delta.join('   '))}</div>` : ''}
+    ${outcomeNotice(t)}
     ${screenMocks(t.result && t.result.wireframe_screens)}
     ${planPanel(t.result && t.result.plan)}
     ${ganttPanel(t.result && t.result.gantt_tasks)}
