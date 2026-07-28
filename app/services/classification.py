@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # bedrock/supabase/settings are imported lazily inside the functions that use
 # them, so the pure `_deterministic_match` can be imported and tested without the
@@ -57,11 +57,32 @@ class ClassificationResult(BaseModel):
     sub_type: Optional[SubType] = Field(
         None, description="Required when meeting_class is 'follow_up', otherwise null."
     )
-    confidence: float = Field(..., ge=0.0, le=1.0)
+    confidence: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description="A FRACTION between 0.0 and 1.0 (e.g. 0.85 for 85% confident) — NEVER a "
+        "percentage like 85 or 100.",
+    )
     reasoning: str = Field(..., description="One-sentence justification, for the review queue UI.")
     # Not model-generated: set by classify_meeting to record HOW the project was
     # resolved, for agent.meeting_intake.classification_method.
     method: str = Field("llm", exclude=True)
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _normalize_percentage(cls, v):
+        """Defense in depth for the description above. Found live: even with
+        an explicit field description AND the schema's own le=1.0 constraint,
+        a smaller model (Ollama qwen2:7b) still returned confidence=100. A
+        value > 1 is unambiguously that percentage-vs-fraction slip, not a
+        different kind of error — normalizing it is correcting a known unit
+        convention, not masking a real one. Values still nonsensical after
+        normalizing (e.g. an original 150) correctly keep failing loud via
+        the ge/le constraints below."""
+        if isinstance(v, (int, float)) and v > 1:
+            return v / 100
+        return v
 
     @classmethod
     def stub(cls, messages: list | None = None) -> "ClassificationResult":
@@ -270,8 +291,14 @@ async def _llm_classify(
         f"- id={p['id']} name={p['name']!r} client={p.get('client_name')!r}" for p in active_projects
     )
     forced_hint = (
-        f"\nThe project has ALREADY been determined: id={forced_project['id']}. "
-        f"Set project_id to exactly that value and focus only on meeting_class/sub_type."
+        f"\nThe project has ALREADY been determined: id={forced_project['id']} ({forced_project['name']!r}). "
+        f"Set project_id to exactly that value — do not reconsider it, do not second-guess it.\n"
+        f"IMPORTANT: this does NOT mean the meeting can't be 'onboarding'. A project row can exist in "
+        f"the CRM (e.g. the deal was won, a placeholder was created) before its kickoff call ever "
+        f"happens — the row existing says nothing about whether THIS meeting is the first substantive "
+        f"scoping conversation. Decide meeting_class purely from what is actually discussed: if the "
+        f"notes are defining scope/screens/roles from scratch for the first time, it is 'onboarding' "
+        f"regardless of whether project_id was already known."
         if forced_project
         else ""
     )
@@ -280,9 +307,11 @@ async def _llm_classify(
         "You classify a meeting transcript for Oblivion, a custom software company. "
         "Given the list of active projects below and the meeting content, decide:\n"
         "1) which project this meeting belongs to (or that it's a brand new project),\n"
-        "2) the meeting class: 'onboarding' (new project, run the full build chain), "
+        "2) the meeting class: 'onboarding' (the first time this project's scope is being defined — "
+        "run the full build chain from scratch), "
         "'follow_up' (revising one existing artifact — set sub_type to wireframe/plan/gantt/budget), "
-        "'update' (progress check on a live build), or 'final_qa' (acceptance stage).\n"
+        "'update' (progress check on a live build), or 'final_qa' (acceptance stage). Judge this from "
+        "what the notes actually discuss, not from whether a project_id happens to be known already.\n"
         "If nothing matches confidently, set project_id to null and fill "
         "new_project_suggested_name instead. Never invent a project_id.\n\n"
         f"Active projects:\n{project_list}{forced_hint}"

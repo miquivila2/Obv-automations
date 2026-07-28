@@ -88,13 +88,23 @@ def default_events() -> list[dict]:
             "id": "e1000000-0000-4000-8000-000000000001",
             "title": "Northwind — kickoff / onboarding",
             "description": "First scoping call for the inventory portal.",
-            "organizer": "ops@northwind.example",
-            "attendee_ids": ["ops@northwind.example", "mvila@eada.net"],
+            # Deliberately NOT ops@northwind.example (the address seeded into
+            # agent.project_matchers below). Found live, against a real model:
+            # seeding the matcher AND handing it the kickoff transcript
+            # simultaneously is an inconsistent fixture — _learn_email_matchers
+            # only ever learns an address from an ALREADY-classified meeting, so
+            # in reality no matcher can exist yet the first time someone from a
+            # brand-new client shows up. A different, not-yet-known contact
+            # attending the very first call is the realistic shape (e.g. the
+            # deal was closed by someone who then hands off to ops@... for the
+            # ongoing work seen in the other Northwind events below).
+            "organizer": "founder@northwind.example",
+            "attendee_ids": ["founder@northwind.example", "mvila@eada.net"],
             "location": "Google Meet",
             "status": "completed",
             "start_at": _hours_ago(3),
             "end_at": _hours_ago(2),
-            "project_id": _PROJECT_ALPHA,
+            "project_id": None,  # not linked yet — that's the point of this fixture
             "language": "es",
             "transcript": (
                 "Ops (Northwind): Necesitamos un portal de inventario para tres almacenes.\n"

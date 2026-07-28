@@ -4,6 +4,8 @@ testable in isolation. We test the matching logic directly.
 Projects carry name + client name/company (read from the CRM); aliases and known
 emails come from a separate `agent.project_matchers` list.
 """
+import pytest
+
 from app.services.classification import ClassificationResult, _deterministic_match
 
 _PROJECTS = [
@@ -77,3 +79,30 @@ def test_stub_with_an_explicit_class_keyword_is_confident_regardless_of_length()
     assert result.meeting_class == "follow_up"
     assert result.sub_type == "budget"
     assert result.confidence >= 0.70
+
+
+# --- confidence percentage-vs-fraction normalization (found live via Ollama) ---
+
+def test_confidence_100_is_normalized_to_1_0():
+    # Real model output seen live (Ollama qwen2:7b): despite an explicit field
+    # description AND the schema's own le=1.0 constraint, it returned
+    # confidence=100. This must not crash the whole classification.
+    result = ClassificationResult(meeting_class="onboarding", confidence=100, reasoning="r")
+    assert result.confidence == 1.0
+
+
+def test_confidence_85_percent_is_normalized_to_0_85():
+    result = ClassificationResult(meeting_class="onboarding", confidence=85, reasoning="r")
+    assert result.confidence == 0.85
+
+
+def test_confidence_already_a_fraction_is_untouched():
+    result = ClassificationResult(meeting_class="onboarding", confidence=0.42, reasoning="r")
+    assert result.confidence == 0.42
+
+
+def test_a_genuinely_nonsensical_confidence_still_fails_loud():
+    # 150% isn't a percentage-vs-fraction slip anyone actually meant -- normalizing
+    # gives 1.5, still outside [0, 1], so this must keep raising, not silently clamp.
+    with pytest.raises(ValueError):
+        ClassificationResult(meeting_class="onboarding", confidence=150, reasoning="r")
