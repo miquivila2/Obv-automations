@@ -27,3 +27,8 @@ venv/
 examples/
 *.pdf
 *.docx
+
+# Mock CRM test harness (app/mock/) -- local, disposable fixture data + generated
+# .docx output. Never meant to be shared or versioned; re-seeds itself from
+# scratch whenever it is empty (see app/mock/store.py).
+mock_data/

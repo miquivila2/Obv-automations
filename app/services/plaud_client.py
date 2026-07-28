@@ -68,6 +68,24 @@ async def _call_tool(tool_name: str, arguments: dict) -> list:
     """Spawn the Plaud MCP server and call one tool. Assumes it is already
     authenticated (see module docstring) — this code never drives the OAuth
     flow itself."""
+    from app.config import get_settings
+
+    # SAFETY REVIEW ISOLATION GUARD: this is the one choke point every Plaud
+    # call funnels through (find_recording_id and fetch_transcript both call
+    # only this). The mock harness (app/mock/runner.py) never reaches here —
+    # it reads a mock event's own `transcript` field directly. If execution
+    # gets here anyway while DATA_SOURCE=mock, something outside the mock
+    # harness reached a real external integration during a "safe" test run
+    # (e.g. the automatic calendar-timer path hit despite the endpoint guard
+    # in app/main.py) — fail loud rather than silently spawning a real
+    # subprocess and reaching Plaud's real service.
+    if get_settings().data_source == "mock":
+        raise RuntimeError(
+            f"Plaud MCP call to {tool_name!r} blocked: DATA_SOURCE=mock. Real Plaud calls "
+            "are never allowed during mock testing — the mock harness supplies transcripts "
+            "directly (app/mock/runner.py) and never needs Plaud at all."
+        )
+
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
 

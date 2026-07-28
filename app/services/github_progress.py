@@ -51,6 +51,39 @@ def _format_pulls(pulls: list[dict]) -> str:
     return "\n".join(lines) if lines else "(no pull requests found)"
 
 
+def _synthetic_activity(owner: str, name: str) -> tuple[list[dict], list[dict]]:
+    """Deterministic fake commits/PRs for mock-mode update-mode testing (see the
+    mock-mode branch of fetch_code_progress_snapshot). Content is intentionally
+    generic/plausible, not tied to any real repo — the point is exercising the
+    Orchestrator's progress-summary LLM call and the downstream Gantt re-sync,
+    not simulating this specific fake repo's real history."""
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    commits = [
+        {
+            "sha": "a1b2c3d4e5f6" + str(i),
+            "commit": {
+                "author": {"name": "dev", "date": (now - timedelta(days=i)).isoformat()},
+                "message": msg,
+            },
+        }
+        for i, msg in enumerate(
+            [
+                "Add data ingestion pipeline",
+                "Fix aggregation query performance",
+                "Wire chart components to API",
+                "Add unit tests for the aggregation service",
+            ]
+        )
+    ]
+    pulls = [
+        {"number": 12, "state": "open", "merged_at": None, "title": "Charting layer (in progress)"},
+        {"number": 11, "state": "closed", "merged_at": now.isoformat(), "title": "Ingestion service"},
+    ]
+    return commits, pulls
+
+
 async def fetch_code_progress_snapshot(project_id: str) -> str:
     """Fetch recent commit + PR activity for the project's linked GitHub repo,
     persist it to agent.code_progress, and return the text summary.
@@ -58,8 +91,6 @@ async def fetch_code_progress_snapshot(project_id: str) -> str:
     Raises ValueError if no repo is linked yet (agent.project_repos has no row
     for this project) — loud, not a silently empty/misleading summary that
     would flow into the Gantt re-sync (docs §10 "fail loud")."""
-    import httpx
-
     from app.config import get_settings
     from app.db.client import get_supabase
 
@@ -70,23 +101,38 @@ async def fetch_code_progress_snapshot(project_id: str) -> str:
             "agent.project_repos (project_id, owner, repo) before running update mode."
         )
 
-    settings = get_settings()
-    headers = {"Accept": "application/vnd.github+json"}
-    if settings.github_token:
-        headers["Authorization"] = f"Bearer {settings.github_token}"
-
     owner, name = repo["owner"], repo["repo"]
-    async with httpx.AsyncClient(base_url=_GITHUB_API, headers=headers, timeout=15.0) as client:
-        commits_resp = await client.get(f"/repos/{owner}/{name}/commits", params={"per_page": 10})
-        commits_resp.raise_for_status()
-        pulls_resp = await client.get(
-            f"/repos/{owner}/{name}/pulls",
-            params={"state": "all", "per_page": 10, "sort": "updated", "direction": "desc"},
-        )
-        pulls_resp.raise_for_status()
+    settings = get_settings()
 
-    commits = commits_resp.json()
-    pulls = pulls_resp.json()
+    if settings.data_source == "mock":
+        # SAFETY REVIEW ISOLATION GUARD: the real GitHub API is a live external
+        # service — reaching it during a "safe" mock test run is exactly the
+        # kind of accidental production-adjacent call this review exists to
+        # rule out (it's also how a fake repo like the mock seed's
+        # halcyon-data/analytics-dashboard produces a confusing live 404
+        # instead of a controlled, deterministic result). A synthetic but
+        # REALISTIC-shaped snapshot is returned instead, so update mode's
+        # full graph path (Orchestrator -> progress summary -> Gantt re-sync)
+        # is still exercisable end to end, offline, deterministically.
+        commits, pulls = _synthetic_activity(owner, name)
+    else:
+        import httpx
+
+        headers = {"Accept": "application/vnd.github+json"}
+        if settings.github_token:
+            headers["Authorization"] = f"Bearer {settings.github_token}"
+
+        async with httpx.AsyncClient(base_url=_GITHUB_API, headers=headers, timeout=15.0) as client:
+            commits_resp = await client.get(f"/repos/{owner}/{name}/commits", params={"per_page": 10})
+            commits_resp.raise_for_status()
+            pulls_resp = await client.get(
+                f"/repos/{owner}/{name}/pulls",
+                params={"state": "all", "per_page": 10, "sort": "updated", "direction": "desc"},
+            )
+            pulls_resp.raise_for_status()
+
+        commits = commits_resp.json()
+        pulls = pulls_resp.json()
 
     summary = (
         f"Recent commits ({owner}/{name}):\n{_format_commits(commits)}\n\n"

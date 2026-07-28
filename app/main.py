@@ -37,6 +37,8 @@ load balancer or uptime check needs no secret.
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
@@ -47,6 +49,30 @@ from app.graph.build import build_graph
 from app.graph.state import ArtifactType, BuildState
 from app.services.ingestion import ingest_meeting
 from app.services.qa_check import run_final_qa_check
+
+
+def require_not_mock_mode() -> None:
+    """Isolation guard (SAFETY REVIEW): the four PRODUCTION trigger endpoints
+    below are shaped to run against the real CRM and, on the automatic path,
+    the real Plaud MCP server. They are NOT how the mock harness (app/mock/)
+    exercises the pipeline — that has its own routes, /mock/api/run and
+    /mock/api/run-all, which read mock events directly and never touch Plaud
+    or GitHub (see app/mock/runner.py).
+
+    So when DATA_SOURCE=mock, calling one of these by habit or by a stray
+    script must not silently "work" against mock data while still reaching
+    out to real external services — it must fail loudly and say exactly what
+    to call instead. This is what makes it structurally impossible to trigger
+    production-shaped execution while testing, rather than merely discouraged."""
+    if get_settings().data_source == "mock":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This endpoint is disabled while DATA_SOURCE=mock (safety isolation — "
+                "see require_not_mock_mode in app/main.py). Use POST /mock/api/run/{event_id} "
+                "or POST /mock/api/run-all instead."
+            ),
+        )
 
 
 def require_webhook_secret(x_webhook_secret: str | None = Header(None)) -> None:
@@ -66,7 +92,52 @@ def require_webhook_secret(x_webhook_secret: str | None = Header(None)) -> None:
         raise HTTPException(status_code=401, detail="invalid or missing X-Webhook-Secret")
 
 
-app = FastAPI(title="Oblivion Multi-Agent Build Automation")
+def _log_data_source_mode() -> None:
+    """SAFETY REVIEW: an unmissable, impossible-to-scroll-past declaration of
+    which data source this process is running against, every single time it
+    starts — so "which mode am I in" is never a question you have to go dig
+    for in .env before trusting (or distrusting) what a run just did."""
+    import logging
+
+    logger = logging.getLogger("app.startup")
+    settings = get_settings()
+
+    if settings.data_source == "mock":
+        logger.warning(
+            "\n%s\n"
+            "  RUNNING IN MOCK MODE — DATA_SOURCE=mock\n"
+            "  * All reads/writes go to %s (a local JSON file), NOT Supabase.\n"
+            "  * The 4 production trigger endpoints are disabled (409) — use /mock/api/* instead.\n"
+            "  * Plaud and GitHub calls are blocked/faked — see app/services/plaud_client.py "
+            "and app/services/github_progress.py.\n"
+            "  * Test console: http://127.0.0.1:8000/mock\n"
+            "%s",
+            "=" * 74, settings.mock_data_path, "=" * 74,
+        )
+    else:
+        logger.warning(
+            "RUNNING IN PRODUCTION DATA MODE — DATA_SOURCE=supabase. "
+            "This process reads/writes the REAL CRM at %s.",
+            settings.supabase_url or "(SUPABASE_URL not set)",
+        )
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    _log_data_source_mode()
+    yield
+
+
+app = FastAPI(title="Oblivion Multi-Agent Build Automation", lifespan=_lifespan)
+
+# The mock-CRM test console (app/mock/) is mounted ONLY in mock mode. Its routes
+# create/delete data and run the chain with no webhook secret — safe against a
+# JSON file, unacceptable against the production CRM. Gating on data_source
+# means there is no configuration in which these routes touch real data.
+if get_settings().data_source == "mock":
+    from app.mock.ui import router as mock_router
+
+    app.include_router(mock_router)
 
 
 # --------------------------------------------------------------------------
@@ -112,7 +183,7 @@ async def _run_graph(initial_state: BuildState) -> dict:
 # --------------------------------------------------------------------------
 # Endpoints
 # --------------------------------------------------------------------------
-@app.post("/webhooks/calendar-timer", dependencies=[Depends(require_webhook_secret)])
+@app.post("/webhooks/calendar-timer", dependencies=[Depends(require_not_mock_mode), Depends(require_webhook_secret)])
 async def calendar_timer(payload: CalendarTimerPayload) -> dict:
     """Agent 1 trigger. Ingest + classify; if confidently classified into an
     actionable class, kick the graph. Low-confidence meetings stop at the
@@ -147,7 +218,7 @@ async def calendar_timer(payload: CalendarTimerPayload) -> dict:
     return {"status": "processed", "intake_id": intake["id"], "needs_human_review": result.get("needs_human_review", False)}
 
 
-@app.post("/webhooks/artifact-changed", dependencies=[Depends(require_webhook_secret)])
+@app.post("/webhooks/artifact-changed", dependencies=[Depends(require_not_mock_mode), Depends(require_webhook_secret)])
 async def artifact_changed(payload: ArtifactChangedPayload) -> dict:
     """The manual-edit re-trigger loop. Only human edits re-flow the chain;
     agent writes are ignored so the chain can't trigger itself (docs §7).
@@ -193,7 +264,7 @@ async def artifact_changed(payload: ArtifactChangedPayload) -> dict:
     return {"status": "re_triggered", "from": resume_from, "needs_human_review": result.get("needs_human_review", False)}
 
 
-@app.post("/orchestrator/run", dependencies=[Depends(require_webhook_secret)])
+@app.post("/orchestrator/run", dependencies=[Depends(require_not_mock_mode), Depends(require_webhook_secret)])
 async def orchestrator_run(payload: OrchestratorRunPayload) -> dict:
     """Direct graph kick for an already-classified meeting."""
     if payload.meeting_class == "final_qa":
@@ -207,7 +278,7 @@ async def orchestrator_run(payload: OrchestratorRunPayload) -> dict:
     return {"status": "processed", "needs_human_review": result.get("needs_human_review", False)}
 
 
-@app.post("/internal/calendar-timer/tick", dependencies=[Depends(require_webhook_secret)])
+@app.post("/internal/calendar-timer/tick", dependencies=[Depends(require_not_mock_mode), Depends(require_webhook_secret)])
 async def calendar_timer_tick() -> dict:
     """Called by an external scheduler, not a user. See module docstring above
     and app/services/calendar_timer.py — attendee resolution is wired (under a

@@ -25,9 +25,19 @@ if TYPE_CHECKING:  # avoid importing the heavy driver at module load
 
 @lru_cache
 def get_supabase() -> "Client":
+    """THE data-source seam. Every read and write in this codebase goes through
+    here, which is what lets the mock CRM (app/mock/store.py) substitute for the
+    real database without a single change to any agent or persistence service —
+    see that module's docstring. Flip DATA_SOURCE in .env to choose."""
+    settings = get_settings()
+
+    if settings.data_source == "mock":
+        from app.mock.store import get_mock_store
+
+        return get_mock_store()  # type: ignore[return-value]  # duck-typed to the slice we use
+
     # Imported lazily so modules that merely reference get_supabase (e.g. graph
     # nodes) can be imported and unit-tested without the supabase driver installed.
     from supabase import create_client
 
-    settings = get_settings()
     return create_client(settings.supabase_url, settings.supabase_service_role_key)

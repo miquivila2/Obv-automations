@@ -14,14 +14,26 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-
 from app.config import get_settings
 
 
 @asynccontextmanager
 async def get_checkpointer():
     settings = get_settings()
+
+    if settings.data_source == "mock":
+        # Mock mode has no Postgres to point at. An in-memory saver keeps the
+        # graph's cyclic Judge loop and interrupt() working exactly as they do
+        # in production — what's lost is only DURABILITY across process restarts,
+        # which a single test run doesn't need. Stated plainly so nobody reads a
+        # clean mock run as proof that resume-after-crash works.
+        from langgraph.checkpoint.memory import MemorySaver
+
+        yield MemorySaver()
+        return
+
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
     async with AsyncPostgresSaver.from_conn_string(settings.supabase_db_uri) as saver:
         # Idempotent: only creates tables on first run.
         await saver.setup()
