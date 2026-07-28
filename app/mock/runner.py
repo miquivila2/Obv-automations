@@ -262,6 +262,7 @@ async def _execute(event: dict, trace: RunTrace) -> None:
         final_state.get("needs_human_review"),
     )
 
+    trace.result["project_id"] = classification["project_id"]
     _attach_deliverables(trace, classification["project_id"])
 
 
@@ -273,7 +274,7 @@ def _attach_deliverables(trace: RunTrace, project_id: str) -> None:
     there rather than from final_state. Every artifact is optional: a
     follow-up run only touches one of them, and this must not fail just
     because the others were never (re)generated this run."""
-    from app.services.budget_persist import load_latest_budget_lines
+    from app.services.budget_persist import load_assembled_budget_document
     from app.services.gantt_persist import load_latest_gantt_tasks
     from app.services.plan_persist import load_latest_plan
     from app.services.wireframe_persist import load_latest_wireframe
@@ -290,11 +291,9 @@ def _attach_deliverables(trace: RunTrace, project_id: str) -> None:
     if gantt_tasks:
         trace.result["gantt_tasks"] = gantt_tasks
 
-    budget_lines = load_latest_budget_lines(project_id)
-    if budget_lines:
-        trace.result["budget_lines"] = budget_lines
-        trace.result["budget_total"] = sum(float(l.get("amount") or 0) for l in budget_lines)
-        trace.result["budget_currency"] = budget_lines[0].get("currency")
+    budget_document = load_assembled_budget_document(project_id)
+    if budget_document:
+        trace.result["budget_document"] = budget_document
 
 
 async def run_pipeline_for_all(event_ids: list[str]) -> list[RunTrace]:

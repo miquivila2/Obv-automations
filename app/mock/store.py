@@ -63,6 +63,7 @@ _KNOWN_TABLES: dict[str, list[str]] = {
         "project_repos",
         "qa_findings",
         "artifact_examples",
+        "budget_documents",
     ],
 }
 
@@ -76,6 +77,7 @@ _UNIQUE_CONSTRAINTS: dict[tuple[str, str], list[str]] = {
     ("agent", "project_matchers"): ["kind", "value"],
     ("agent", "project_repos"): ["project_id"],
     ("agent", "wireframe_drafts"): ["project_id", "version"],
+    ("agent", "budget_documents"): ["project_id"],
 }
 
 

@@ -129,6 +129,72 @@ async def run_all() -> dict:
 
 
 # --------------------------------------------------------------------------
+# Budget document — Axo Capital format (discounts/IVA/contingency/market/milestones)
+# --------------------------------------------------------------------------
+class BudgetExtrasPayload(BaseModel):
+    """Human-entered fields only. discount_pct_by_month and milestones' part_pct
+    always start at 0 from the agent (docs §5.2) — this is where a human sets
+    the real numbers, mirroring what would eventually be an editable form in
+    the CRM itself."""
+
+    discount_pct_by_month: dict[str, float] = Field(default_factory=dict)
+    contingency_pct: float | None = None
+    milestones: list[dict] = Field(default_factory=list)
+
+
+def _assembled_budget_document(project_id: str) -> dict:
+    from app.services.budget_persist import load_assembled_budget_document
+
+    document = load_assembled_budget_document(project_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail=f"no budget document for project {project_id}")
+    return document
+
+
+@router.get("/api/budget/{project_id}/document")
+async def get_budget_document(project_id: str) -> dict:
+    return _assembled_budget_document(project_id)
+
+
+@router.get("/api/budget/{project_id}/pdf")
+async def get_budget_pdf(project_id: str):
+    from fastapi.responses import Response
+
+    from app.services.budget_pdf import render_budget_pdf
+
+    document = _assembled_budget_document(project_id)
+    pdf_bytes = render_budget_pdf(project_name=document["project_name"], document=document)
+    filename = f"{document['project_name'].replace(' ', '_')}_budget.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.put("/api/budget/{project_id}/extras")
+async def update_budget_extras(project_id: str, payload: BudgetExtrasPayload) -> dict:
+    """The human-edit surface: set discount %, contingency %, milestone splits.
+    Agent 5 (persist_budget) always carries these forward unchanged on
+    regeneration — this is the only place they're meant to be set."""
+    store = _store()
+    rows = store.rows("agent", "budget_documents")
+    existing = next((r for r in rows if r.get("project_id") == project_id), None)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"no budget document for project {project_id}")
+
+    updated = {
+        **existing,
+        "discount_pct_by_month": payload.discount_pct_by_month,
+        "contingency_pct": payload.contingency_pct,
+        "milestones": payload.milestones,
+    }
+    rows = [updated if r.get("project_id") == project_id else r for r in rows]
+    store.replace_table("agent", "budget_documents", rows)
+    return {"updated": True, "document": _assembled_budget_document(project_id)}
+
+
+# --------------------------------------------------------------------------
 # Database inspection / reset
 # --------------------------------------------------------------------------
 @router.get("/api/db")
@@ -340,6 +406,8 @@ _HTML = r"""<!doctype html>
     <div id="list"><p class="empty">loading…</p></div>
 
     <h2 style="margin-top:22px">New / edit meeting</h2>
+    <div id="form_mode_banner" style="display:none; background:var(--flag-soft, #3a2318); border:1px solid var(--warn);
+         border-radius:4px; padding:8px 10px; margin-bottom:10px; font-size:12.5px;"></div>
     <div class="card">
       <input type="hidden" id="f_id">
       <label>Title</label><input id="f_title" placeholder="Client — kickoff">
@@ -362,7 +430,7 @@ _HTML = r"""<!doctype html>
       <label>Transcript (stands in for the Plaud recording) — dialogue format, one "Speaker: line" per line</label>
       <textarea id="f_transcript" placeholder="Client: We need a portal with role-based login.&#10;Miquel (Oblivion): Got it, tell me more about the roles."></textarea>
       <div class="row">
-        <button onclick="save()" class="primary">Save meeting</button>
+        <button onclick="save()" class="primary" id="save_btn">Save meeting</button>
         <button onclick="clearForm()">Clear</button>
       </div>
     </div>
@@ -470,12 +538,39 @@ function edit(id) {
   $('f_start').value = m.start_at || ''; $('f_end').value = m.end_at || '';
   $('f_project').value = m.project_id || ''; $('f_language').value = m.language || 'es';
   $('f_transcript').value = m.transcript || '';
+  showFormMode('edit', m.title);
   window.scrollTo({top: document.body.scrollHeight, behavior:'smooth'});
+}
+
+function showFormMode(mode, title) {
+  const banner = $('form_mode_banner');
+  const btn = $('save_btn');
+  if (mode === 'edit') {
+    banner.style.display = 'block';
+    banner.innerHTML = `✎ <b>Editing "${esc(title||'')}"</b> — Save will UPDATE this same meeting ` +
+      `(same event id, so re-running it will report "already ingested"). ` +
+      `Want a NEW meeting instead? <button onclick="duplicateAsNew()" style="margin-left:4px">Duplicate as new</button>`;
+    btn.textContent = 'Update meeting';
+  } else {
+    banner.style.display = 'none';
+    btn.textContent = 'Save meeting';
+  }
+}
+
+function duplicateAsNew() {
+  // The one-click fix for the exact trap this banner exists to prevent:
+  // editing an existing meeting as a template but forgetting its id is still
+  // attached, so "Save" would silently overwrite the original instead of
+  // creating a new one. This just drops the id so the next Save POSTs fresh.
+  $('f_id').value = '';
+  showFormMode('create');
+  alert('This will now save as a brand-new meeting (fresh id) instead of updating the original.');
 }
 
 function clearForm() {
   ['f_id','f_title','f_description','f_organizer','f_attendees','f_location',
    'f_start','f_end','f_project','f_transcript'].forEach(i => $(i).value = '');
+  showFormMode('create');
 }
 
 async function del(id) {
@@ -546,22 +641,114 @@ function ganttPanel(tasks) {
   </details>`;
 }
 
-function budgetPanel(lines, total, currency) {
-  if (!lines || !lines.length) return '';
-  const rows = lines.map(l => `
-    <tr>
-      <td>${esc(l.category)}</td>
-      <td>${esc(l.description)}<div class="meta">${esc(l.details||'')}</div></td>
-      <td class="num">${esc(l.quantity)}h</td>
-      <td class="num">${esc(l.amount)}</td>
-    </tr>`).join('');
-  return `<details open class="deliverable"><summary>budget — ${lines.length} line(s)</summary>
-    <table class="dtable">
-      <thead><tr><th>Category</th><th>Description</th><th>Hours</th><th>Amount</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-    <div class="budget-total">Total: ${esc(total)} ${esc(currency||'')}</div>
+function budgetPanel(doc, projectId) {
+  if (!doc || !doc.months) return '';
+  const currency = doc.currency;
+
+  const monthBlocks = doc.months.map(m => {
+    const rows = m.lines.map(l => `
+      <tr>
+        <td>${esc(l.category||'')}</td>
+        <td>${esc(l.description||'')}<div class="meta">${esc(l.justification||l.details||'')}</div></td>
+        <td class="num">${esc(l.hours)}h</td>
+        <td class="num">${esc(l.unit_rate)}</td>
+        <td class="num">${esc(l.amount)}</td>
+      </tr>`).join('');
+    return `<div class="phase" style="margin-top:10px">
+      <div class="pname">${esc(m.month)}</div>
+      <table class="dtable">
+        <thead><tr><th>Category</th><th>Description</th><th>Hours</th><th>Rate</th><th>Cost</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="needs-row">
+        <span><b>Subtotal:</b> ${esc(m.subtotal)} ${esc(currency)}</span>
+        <span><b>Discount (${esc(m.discount_pct)}%):</b> -${esc(m.discount_amount)} ${esc(currency)}</span>
+        <span><b>Total:</b> ${esc(m.total)} ${esc(currency)}</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  const market = doc.market_comparison ? `
+    <div class="phase" style="margin-top:10px">
+      <div class="pname">What the same work costs elsewhere</div>
+      <table class="dtable">
+        <thead><tr><th>Elsewhere</th><th>Published range</th><th>This budget</th></tr></thead>
+        <tbody>${doc.market_comparison.map(b => `
+          <tr><td>${esc(b.label)}</td><td class="num">${esc(b.rate_range)}</td>
+              <td class="num">US$${esc(b.price_low)} – US$${esc(b.price_high)}</td></tr>`).join('')}
+      </tbody></table>
+    </div>` : '';
+
+  const milestones = (doc.milestones||[]).length ? `
+    <div class="phase" style="margin-top:10px">
+      <div class="pname">Payment terms (0% = not yet set manually)</div>
+      <table class="dtable">
+        <thead><tr><th>When</th><th>What's delivered</th><th>Part</th><th>Amount</th></tr></thead>
+        <tbody>${doc.milestones.map(m => `
+          <tr><td>${esc(m.when)}</td><td>${esc(m.description)}</td>
+              <td class="num">${esc(m.part_pct)}%</td><td class="num">${esc(m.amount)}</td></tr>`).join('')}
+      </tbody></table>
+    </div>` : '';
+
+  const pid = projectId ? esc(projectId) : '';
+  const downloads = projectId ? `
+    <div class="row" style="margin-top:10px">
+      <button onclick="window.open('/mock/api/budget/${pid}/pdf', '_blank')">⬇ Download PDF</button>
+      <button onclick="downloadBudgetJson('${pid}')">⬇ Download JSON</button>
+      <button onclick="openBudgetEditor('${pid}')">✎ Edit discount / contingency / milestones</button>
+    </div>` : '';
+
+  return `<details open class="deliverable"><summary>budget — ${doc.months.length} month(s), Axo Capital format</summary>
+    ${monthBlocks}
+    <div class="needs-row" style="margin-top:10px; font-size:13px">
+      <span><b>Subtotal after discounts:</b> ${esc(doc.subtotal_after_discounts)} ${esc(currency)}</span>
+      <span><b>IVA (${esc((doc.iva_rate*100).toFixed(0))}%):</b> ${esc(doc.iva_amount)} ${esc(currency)}</span>
+      <span><b>Contingency:</b> ${doc.contingency_pct != null ? esc(doc.contingency_pct)+'%' : 'not set'}</span>
+    </div>
+    <div class="budget-total">TOTAL: ${esc(doc.total_all_included)} ${esc(currency)}</div>
+    ${market}
+    ${milestones}
+    ${downloads}
   </details>`;
+}
+
+async function downloadBudgetJson(projectId) {
+  const doc = await api('/budget/' + projectId + '/document');
+  const blob = new Blob([JSON.stringify(doc, null, 2)], {type: 'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (doc.project_name || 'budget').replace(/\s+/g, '_') + '_budget.json';
+  a.click();
+}
+
+async function openBudgetEditor(projectId) {
+  const doc = await api('/budget/' + projectId + '/document');
+  const discounts = doc.months.map(m => `${m.month}=${m.discount_pct}`).join(', ');
+  const newDiscounts = prompt('Discount % per month (format "June=100, July=40"):', discounts);
+  if (newDiscounts === null) return;
+  const discount_pct_by_month = {};
+  newDiscounts.split(',').forEach(pair => {
+    const [k, v] = pair.split('=').map(s => s.trim());
+    if (k) discount_pct_by_month[k] = parseFloat(v) || 0;
+  });
+
+  const contingencyStr = prompt('Contingency % (blank = not set):', doc.contingency_pct != null ? String(doc.contingency_pct) : '');
+  const contingency_pct = contingencyStr === null || contingencyStr.trim() === '' ? null : parseFloat(contingencyStr);
+
+  const milestonesStr = prompt(
+    'Milestone parts, format "When|Description|Part%" one per line:',
+    (doc.milestones||[]).map(m => `${m.when}|${m.description}|${m.part_pct}`).join('\n')
+  );
+  if (milestonesStr === null) return;
+  const milestones = milestonesStr.split('\n').filter(Boolean).map(line => {
+    const [when, description, part_pct] = line.split('|').map(s => (s||'').trim());
+    return {when, description, part_pct: parseFloat(part_pct) || 0, amount: 0};
+  });
+
+  api('/budget/' + projectId + '/extras', {
+    method: 'PUT',
+    body: JSON.stringify({discount_pct_by_month, contingency_pct, milestones}),
+  }).then(() => { alert('Saved. Re-run the pipeline (or reload) to see it reflected everywhere.'); load(); });
 }
 
 function outcomeNotice(t) {
@@ -617,7 +804,7 @@ function renderTrace(t) {
     ${screenMocks(t.result && t.result.wireframe_screens)}
     ${planPanel(t.result && t.result.plan)}
     ${ganttPanel(t.result && t.result.gantt_tasks)}
-    ${budgetPanel(t.result && t.result.budget_lines, t.result && t.result.budget_total, t.result && t.result.budget_currency)}
+    ${budgetPanel(t.result && t.result.budget_document, t.result && t.result.project_id)}
     <details><summary>raw result JSON</summary><pre>${esc(JSON.stringify(t.result, null, 2))}</pre></details>
     ${t.traceback ? `<details><summary>traceback</summary><pre>${esc(t.traceback)}</pre></details>` : ''}
     <details open><summary>logs (${(t.logs||[]).length})</summary><div class="logs">${logs}</div></details>
