@@ -100,7 +100,6 @@ def plan_gantt_upsert(
             "duration_days": task["duration_days"],
             "description": task["description"],  # NOT a gantt_tasks column — see persist_gantt
             "depends_on": [previous_id] if previous_id else [],
-            "assignees": None,
             "assignee_ids": [],
             "progress": 0,
             "anchor_date": None,  # date resolution not designed yet — see docs §9

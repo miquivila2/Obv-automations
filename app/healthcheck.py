@@ -20,7 +20,7 @@ So this checks the contract itself, read-only:
      listed under Settings → API → Exposed schemas (default: public,
      graphql_public). Every `.schema("agent")` call in this codebase fails
      until `agent` is added there — the single most likely first-run failure.
-  5. Every `agent.*` table exists (i.e. all six migrations were applied).
+  5. Every `agent.*` table exists (i.e. all seven migrations were applied).
   6. Every `public.*` CRM table we read or write exists AND has the exact
      columns we use. PostgREST rejects a select naming an unknown column, so
      naming them all is a read-only way to verify the write contract without
@@ -59,7 +59,7 @@ _CRM_TABLES: dict[str, list[str]] = {
     ],
     # Written by Agent 4 (app/services/gantt_persist.py).
     "gantt_tasks": [
-        "id", "project_id", "phase", "name", "duration_days", "depends_on", "assignees",
+        "id", "project_id", "phase", "name", "duration_days", "depends_on",
         "assignee_ids", "progress", "anchor_date", "position", "source_draft_id",
     ],
     # Written by Agent 5 (app/services/budget_persist.py).
@@ -180,7 +180,7 @@ def check_agent_schema_exposed() -> bool:
 
 
 def check_agent_tables() -> bool:
-    """Every agent.* table exists - i.e. all six migrations were applied."""
+    """Every agent.* table exists - i.e. all seven migrations were applied."""
     from app.db.client import get_supabase
 
     supabase = get_supabase()
@@ -193,7 +193,7 @@ def check_agent_tables() -> bool:
 
     if missing:
         _fail(f"missing agent.* tables: {', '.join(missing)}")
-        _info("Apply every file in supabase/migrations/ in order (0001 -> 0006).")
+        _info("Apply every file in supabase/migrations/ in order (0001 -> 0007).")
         return False
     _ok(f"all {len(_AGENT_TABLES)} agent.* tables present (migrations 0001-0004 applied)")
     return True

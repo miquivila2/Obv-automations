@@ -78,11 +78,16 @@ Apply every file in `supabase/migrations/` **in order** to the test database
 (Supabase SQL editor, or `psql "$SUPABASE_DB_URI" -f <file>` for each):
 `0001_agent_layer.sql`, `0002_gantt_task_ownership.sql`,
 `0003_gantt_task_details.sql`, `0004_project_repos.sql`,
-`0005_qa_findings.sql`, `0006_artifact_examples.sql`.
+`0005_qa_findings.sql`, `0006_artifact_examples.sql`, `0007_enable_rls.sql`.
 
 None of these is optional. `0005` backs Agent 8 (Final QA) and `0006` backs the
 few-shot library that Agents 2, 5 and the Judge query on every run — a missing
-table there fails the build loudly rather than degrading (docs §10).
+table there fails the build loudly rather than degrading (docs §10). `0007`
+enables Row Level Security on every `agent.*` table with zero policies — this
+app's service_role key bypasses RLS by Supabase design, so it changes nothing
+about how the app behaves, but it denies `anon`/`authenticated` access by
+default instead of leaving it to whatever the schema-exposure step below
+happens to allow.
 
 **Then expose the `agent` schema**: Supabase → Settings → API → *Exposed schemas*
 → add `agent` → save. Supabase serves only `public` and `graphql_public` by
